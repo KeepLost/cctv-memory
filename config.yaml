@@ -1,0 +1,183 @@
+# CCTV Memory example configuration.
+#
+# The loader reads this file from ./config.yaml by default, or from the path in
+# CCTV_MEMORY_CONFIG_FILE. Precedence is: CLI/init args > environment variables >
+# this file > built-in defaults.
+#
+# Do not put secret values in this file. Store credentials in environment
+# variables and reference only the variable names below.
+
+app:
+  env: local
+  timezone: Asia/Shanghai
+  data_dir: ./data
+  log_level: INFO
+
+server:
+  host: 127.0.0.1
+  port: 8080
+  public_base_url: null
+  playback_signing_key_env: CCTV_MEMORY_PLAYBACK_SIGNING_KEY
+
+database:
+  # sqlite is the default local backend. Use postgres for PostgreSQL + pgvector.
+  backend: sqlite
+  sqlite_path: ./data/cctv_memory.sqlite3
+  # Environment variable NAME holding the SQLAlchemy PostgreSQL DSN.
+  # Example value outside this file:
+  # postgresql+psycopg://user:password@localhost:5432/cctv_memory
+  postgres_dsn_env: CCTV_MEMORY_POSTGRES_DSN
+  pool_size: 5
+  max_overflow: 10
+  echo_sql: false
+
+storage:
+  video_root: ./data/videos
+  frame_root: ./data/frames
+  artifact_root: ./data/artifacts
+
+observability:
+  timeline_enabled: true
+  timeline_payload_mode: minimal
+  timeline_retention_days: 30
+  timeline_export_max_events: 100000
+  timeline_fail_open: true
+  sql_trace_enabled: false
+
+worker:
+  enabled: true
+  embedded: true
+  worker_id: local-worker-1
+  lease_seconds: 300
+  lease_renew_seconds: 60
+  max_retries: 3
+  max_concurrent_jobs: 1
+  max_unit_workers_per_job: 1
+  db_write_max_attempts: 3
+  db_write_backoff_ms: 100
+  orphan_recovery_enabled: true
+  orphan_stale_seconds: 900
+  orphan_batch_limit: 100
+
+search:
+  context_ttl_seconds: 900
+  context_idle_seconds: 300
+  max_top_k: 100
+  max_candidates_per_revision: 1000
+  max_revisions_per_context: 8
+  rrf_k: 60
+  static_weight: 1.0
+  dynamic_weight: 1.0
+  fts_weight: 0.5
+  vector_weight: 1.0
+  max_tag_boost: 0.2
+  max_analysis_scale_boost: 0.2
+  search_config_version: search-v1
+
+pipeline:
+  video_metadata_mode: ffprobe
+  static_duration_ms: 30000
+  decode_backend: opencv
+  decode_fallback_to_ffmpeg: true
+  default_segment:
+    window_seconds: 12
+    overlap_seconds: 3
+    frame_strategy: uniform
+    frames_per_segment: 6
+  detector_gate:
+    enabled: false
+    provider: mock
+    model_id: mock-detector-v1
+    sample_fps: 1.0
+    debug_media_retention: false
+    rules: []
+    mock_positive_labels: []
+    mock_positive_frame_ratio: 0.0
+    mock_confidence: 0.9
+  motion_scan:
+    method: frame_diff
+    threshold: 0.15
+    min_duration_ms: 600
+    merge_gap_ms: 800
+    sample_fps: 4.0
+    frame_width: 128
+    frame_height: 72
+  high_freq_event:
+    window_seconds: 3
+    overlap_ratio: 0.5
+    frame_strategy: uniform
+    frames_per_segment: 8
+  cross_scale:
+    enabled: true
+    high_freq_quota: 3
+  frame_stream:
+    sample_fps: 8.0
+    buffer_seconds: 4.0
+    max_buffer_bytes: 268435456
+    scoring_scale: 320x180
+    selection_strategy: bins_then_score
+    selected_jpeg_quality: 80
+    w_motion: 1.0
+    w_scene: 0.5
+    w_quality: 0.5
+    min_blur: 50.0
+    cleanup_selected_on_success: true
+    decode_timeout_seconds: 120
+
+features:
+  sqlite_vec: false
+  low_freq_summary: false
+  user_registration: false
+  admin_policy_api: false
+
+vlm:
+  # mock is offline and deterministic. Set provider: real only when the key env
+  # var below is present and the endpoint is reachable.
+  provider: mock
+  model: null
+  model_id: gemini-3.1-pro-preview
+  base_url_env: CCTV_MEMORY_VLM_BASE_URL
+  api_key_env: LLM_KEY
+  default_base_url: http://nginx:8081/api/ohmygpt/chat/completions
+  timeout_seconds: 120
+  max_retries: 2
+  media_input: frames
+  include_audio: false
+  extra_body: {}
+  max_concurrent_requests: 1
+  min_request_interval_ms: 0
+  unit_max_attempts: 3
+  retry_backoff_base_ms: 500
+  retry_backoff_cap_ms: 8000
+  retry_jitter: 0.2
+  terminal_write_max_attempts: 3
+  terminal_write_backoff_ms: 100
+  media_log_mode: metadata_only
+  debug_media_retention: false
+
+indexing:
+  # Enable this to use embedding vectors in search ranking. The default mock
+  # provider is local/offline. Set provider: real only with the key env var below.
+  enabled: false
+  provider: mock
+  embedding_model: BAAI/bge-m3
+  embedding_dimensions: 1024
+  base_url_env: CCTV_MEMORY_EMBEDDING_BASE_URL
+  default_base_url: http://nginx:8081/api/siliconflow
+  embeddings_path: /embeddings
+  api_key_env: CCTV_MEMORY_EMBEDDING_API_KEY
+  encoding_format: float
+  timeout_seconds: 30.0
+  max_retries: 1
+  # Enable rerank to apply a cross-encoder reranker to already-authorized
+  # candidates. The default mock provider is local/offline.
+  rerank_enabled: false
+  rerank_provider: mock
+  rerank_model: Qwen/Qwen3-Reranker-8B
+  rerank_base_url_env: CCTV_MEMORY_RERANK_BASE_URL
+  rerank_default_base_url: http://nginx:8081/api/siliconflow
+  rerank_path: /rerank
+  rerank_api_key_env: CCTV_MEMORY_RERANK_API_KEY
+  rerank_top_n: 50
+  rerank_timeout_seconds: 30.0
+  rerank_max_retries: 1

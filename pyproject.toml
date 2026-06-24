@@ -1,0 +1,67 @@
+[project]
+name = "cctv-memory"
+version = "0.1.0"
+description = "CCTV Memory: searchable natural-language observation records from surveillance video."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "fastapi>=0.136.3",
+    "uvicorn[standard]>=0.49.0",
+    "psycopg[binary]>=3.2",
+    "opencv-python-headless>=4.9",
+    "numpy>=1.26",
+    "httpx>=0.28.1",
+    "plotly>=5.24",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-PyYAML>=6.0.12.20260518",
+]
+
+[project.scripts]
+cctv-memory = "cctv_memory.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cctv_memory"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["cctv_memory", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"cctv_memory/infrastructure/db/migrations/*" = ["E501"]
+"cctv_memory/infrastructure/db/postgres/schema.py" = ["E501"]
+"cctv_memory/infrastructure/vlm/prompts/*" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "cctv_memory.infrastructure.db.migrations.*"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "postgres: tests requiring a live PostgreSQL/pgvector database via CCTV_MEMORY_TEST_POSTGRES_DSN",
+]

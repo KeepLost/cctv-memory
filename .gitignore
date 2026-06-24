@@ -1,0 +1,53 @@
+# Status directory (agent communication, NOT versioned)
+status/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# Data / runtime
+data/
+datasets/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.local
+*.key
+*.pem
+credentials.json
+
+# Logs
+*.log
+logs/
+
+# Temp
+temp/
+tmp/
+
+# Session artifacts (agent runtime)
+.session-sid
+.omo/
