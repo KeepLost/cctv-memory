@@ -16,6 +16,7 @@ from cctv_memory.contracts.analysis import (
     HighFreqTrigger,
     ModelCallLog,
 )
+from cctv_memory.contracts.pre_vlm_gate import PreVlmGateLog
 from cctv_memory.repositories.types import Page
 
 
@@ -160,3 +161,14 @@ class DetectorGateLogRepository(Protocol):
     def get_log(self, gate_log_id: str) -> DetectorGateLog | None: ...
 
     def list_by_unit(self, unit_id: str) -> list[DetectorGateLog]: ...
+
+
+@runtime_checkable
+class PreVlmGateLogRepository(Protocol):
+    """Generic pre-VLM gate log persistence port."""
+
+    def create_log(self, log: PreVlmGateLog) -> PreVlmGateLog: ...
+
+    def get_log(self, gate_log_id: str) -> PreVlmGateLog | None: ...
+
+    def list_by_unit(self, unit_id: str) -> list[PreVlmGateLog]: ...

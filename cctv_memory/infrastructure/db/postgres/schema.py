@@ -261,6 +261,38 @@ def postgres_schema_ddl(*, vector_dimension: int) -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_detector_gate_unit ON detector_gate_logs(unit_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_detector_gate_job ON detector_gate_logs(analysis_job_id, analysis_scale)",
         """
+        CREATE TABLE IF NOT EXISTS pre_vlm_gate_logs (
+          gate_log_id TEXT PRIMARY KEY,
+          analysis_job_id TEXT NOT NULL,
+          scale_task_id TEXT NOT NULL,
+          unit_id TEXT NOT NULL,
+          video_id TEXT NOT NULL,
+          analysis_scale TEXT NOT NULL,
+          unit_kind TEXT NOT NULL,
+          profile_name TEXT NOT NULL,
+          segment_start_ms INTEGER NOT NULL,
+          segment_end_ms INTEGER NOT NULL,
+          provider TEXT NOT NULL,
+          model_id TEXT,
+          status TEXT NOT NULL,
+          decision_json JSONB NOT NULL,
+          signals_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+          frame_evidence_json JSONB NOT NULL,
+          evidence_hash TEXT NOT NULL,
+          rule_config_hash TEXT,
+          suppression_policy TEXT,
+          media_refs_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+          artifact_refs_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+          started_at TIMESTAMPTZ,
+          finished_at TIMESTAMPTZ,
+          duration_ms INTEGER,
+          created_at TIMESTAMPTZ NOT NULL,
+          CONSTRAINT ck_pre_vlm_gate_time_order CHECK (segment_start_ms < segment_end_ms)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_pre_vlm_gate_unit ON pre_vlm_gate_logs(unit_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_pre_vlm_gate_job ON pre_vlm_gate_logs(analysis_job_id, analysis_scale)",
+        """
         CREATE TABLE IF NOT EXISTS analysis_timeline_events (
           timeline_event_id TEXT PRIMARY KEY,
           trace_id TEXT NOT NULL,

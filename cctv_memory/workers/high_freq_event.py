@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from cctv_memory.application.publication import PublicationService
 from cctv_memory.contracts.analysis import AnalysisUnit, ModelCallLog
+from cctv_memory.contracts.pre_vlm_gate import GateProfile
 from cctv_memory.contracts.pipeline import PublishObservationRecordsCommand
 from cctv_memory.contracts.vlm import VlmObservationOutput, VlmSegmentRequest
 from cctv_memory.domain import policies
@@ -28,6 +29,7 @@ from cctv_memory.repositories.camera import CameraRepository
 from cctv_memory.repositories.principal import AccessPolicyRepository
 from cctv_memory.repositories.video_source import VideoSourceRepository
 from cctv_memory.services.timeline_recorder import TimelineRecorder
+from cctv_memory.services.pre_vlm_gate import PreVlmGatePort
 from cctv_memory.services.video_processor import VideoProcessorPort
 from cctv_memory.services.vlm_analyzer import VlmAnalyzerPort
 from cctv_memory.services.write_coordinator import (
@@ -46,6 +48,7 @@ from cctv_memory.workers.frame_selection import (
     cleanup_selected_frames,
     select_frames_for_unit,
 )
+from cctv_memory.workers.pre_vlm_gate import run_pre_vlm_gate
 from cctv_memory.workers.retry import (
     RetryPolicy,
     VlmAttempt,
@@ -115,6 +118,8 @@ class HighFreqEventProcessor:
         terminal_write_max_attempts: int = 1,
         terminal_write_backoff_ms: int = 100,
         provider_options: dict[str, object] | None = None,
+        pre_vlm_gate: PreVlmGatePort | None = None,
+        pre_vlm_gate_profile: GateProfile | None = None,
     ) -> None:
         self._video_sources = video_sources
         self._jobs = jobs
@@ -157,6 +162,8 @@ class HighFreqEventProcessor:
         self._terminal_write_max_attempts = max(1, int(terminal_write_max_attempts))
         self._terminal_write_backoff_ms = max(0, int(terminal_write_backoff_ms))
         self._provider_options = dict(provider_options or {})
+        self._pre_vlm_gate = pre_vlm_gate
+        self._pre_vlm_gate_profile = pre_vlm_gate_profile
 
     def _db_write(self, write: Callable[[], None]) -> None:
         """Run a terminal DB write with bounded transient-lock retry (state hardening)."""
@@ -514,9 +521,15 @@ class HighFreqEventProcessor:
                     u: AnalysisUnit = unit,
                     s: int = window.start_ms,
                     e: int = window.end_ms,
+                    trigger_context: dict[str, object] = {
+                        "trigger_id": trigger.trigger_id,
+                        "trigger_reason": trigger.trigger_reason,
+                        "motion_score": trigger.motion_score,
+                        "change_score": trigger.change_score,
+                    },
                 ) -> UnitOutcome:
                     return self._run_unit_in_fresh_session(
-                        u, s, e, analysis_job_id, video_id, ctx, prompt_version
+                        u, s, e, analysis_job_id, video_id, ctx, prompt_version, trigger_context
                     )
 
                 planned.append(PlannedUnit(scale=_SCALE, run=_run))
@@ -531,6 +544,7 @@ class HighFreqEventProcessor:
         video_id: str,
         ctx: VideoContext,
         prompt_version: str,
+        trigger_context: dict[str, object] | None = None,
     ) -> UnitOutcome:
         """Run one unit with its own session. VLM runs concurrently; DB writes
         are serialized via the backend write coordinator (SQLite single-writer).
@@ -584,6 +598,7 @@ class HighFreqEventProcessor:
                 prompt_version=prompt_version,
                 model_version=model_version,
                 phase=phase,
+                trigger_context=trigger_context,
             )
         except Exception as exc:  # noqa: BLE001 - last-resort lifecycle guard
             self._force_terminalize_running(
@@ -611,6 +626,7 @@ class HighFreqEventProcessor:
         prompt_version: str,
         model_version: str | None,
         phase: UnitPhase,
+        trigger_context: dict[str, object] | None = None,
     ) -> UnitOutcome:
         """Body of a running unit (frame select -> VLM -> publish). See guard above."""
         # Frame selection + media refs are terminalized (run after mark_running,
@@ -708,6 +724,45 @@ class HighFreqEventProcessor:
                 error_message=exc,
             )
             return UnitOutcome.FAILED
+
+        gate_bundle = run_pre_vlm_gate(
+            gate=self._pre_vlm_gate,
+            profile=self._pre_vlm_gate_profile,
+            media_refs_input=frame_selection.media_refs_input,
+            analysis_job_id=analysis_job_id,
+            scale_task_id=self._scale_task_id,
+            unit_id=unit_id,
+            video_id=video_id,
+            analysis_scale=_SCALE,
+            unit_kind="high_freq_event_window",
+            segment_start_ms=start_ms,
+            segment_end_ms=end_ms,
+            provider=(self._pre_vlm_gate_profile.provider if self._pre_vlm_gate_profile else ""),
+            model_id=self._pre_vlm_gate_profile.model_id if self._pre_vlm_gate_profile else None,
+            trigger_context=dict(trigger_context or {}),
+        )
+        if gate_bundle is not None and not gate_bundle.triggered_vlm:
+            self._terminalize_unit_skipped(
+                unit_id,
+                analysis_job_id,
+                start_ms,
+                end_ms,
+                mcall_id,
+                prompt_version,
+                skipped_reason="pre_vlm_gate_suppressed",
+            )
+            self._timeline_event(
+                "pre_vlm_gate_suppressed",
+                unit_id=unit_id,
+                analysis_job_id=analysis_job_id,
+                video_id=video_id,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                mcall_id=mcall_id,
+                status="suppressed_vlm",
+                metadata={"decision": gate_bundle.decision.model_dump(mode="json")},
+            )
+            return UnitOutcome.SKIPPED
 
         vlm_request = VlmSegmentRequest(
             request_id=new_id("vlm_req"),
@@ -1097,15 +1152,16 @@ class HighFreqEventProcessor:
         end_ms: int,
         mcall_id: str,
         prompt_version: str,
+        skipped_reason: str = "insufficient_frames",
     ) -> None:
-        """Mark a unit SKIPPED(insufficient_frames) (own serialized session)."""
+        """Mark a unit SKIPPED with the provided reason (own serialized session)."""
 
         def _w() -> None:
             with self._write.write(), self._runtime.session() as session:  # type: ignore[union-attr]
                 repos = self._runtime.repositories(session)  # type: ignore[union-attr]
                 repos.analysis_unit().mark_skipped(
                     unit_id,
-                    skipped_reason="insufficient_frames",
+                    skipped_reason=skipped_reason,
                     model_call_id=mcall_id,
                 )
 
@@ -1198,6 +1254,29 @@ class HighFreqEventProcessor:
                 model_call_id=mcall_id,
             )
             return UnitOutcome.FAILED
+
+        gate_bundle = run_pre_vlm_gate(
+            gate=self._pre_vlm_gate,
+            profile=self._pre_vlm_gate_profile,
+            media_refs_input=frame_selection.media_refs_input,
+            analysis_job_id=analysis_job_id,
+            scale_task_id=self._scale_task_id,
+            unit_id=unit.unit_id,
+            video_id=video_id,
+            analysis_scale=_SCALE,
+            unit_kind="high_freq_event_window",
+            segment_start_ms=start_ms,
+            segment_end_ms=end_ms,
+            provider=(self._pre_vlm_gate_profile.provider if self._pre_vlm_gate_profile else ""),
+            model_id=self._pre_vlm_gate_profile.model_id if self._pre_vlm_gate_profile else None,
+        )
+        if gate_bundle is not None and not gate_bundle.triggered_vlm:
+            units.mark_skipped(
+                unit.unit_id,
+                skipped_reason="pre_vlm_gate_suppressed",
+                model_call_id=mcall_id,
+            )
+            return UnitOutcome.SKIPPED
 
         vlm_request = VlmSegmentRequest(
             request_id=new_id("vlm_req"),

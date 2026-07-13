@@ -20,6 +20,7 @@ from cctv_memory.infrastructure.db.repositories.admin import (
     SqliteHighFreqTriggerRepository,
     SqliteModelCallLogRepository,
     SqlitePrincipalRepository,
+    SqlitePreVlmGateLogRepository,
     SqliteVideoSourceRepository,
 )
 from cctv_memory.infrastructure.db.repositories.audit import SqliteAuditRepository
@@ -53,6 +54,7 @@ class RepositoryFactoryProtocol(Protocol):
     def analysis_unit(self) -> Any: ...
     def model_call_log(self) -> Any: ...
     def detector_gate_log(self) -> Any: ...
+    def pre_vlm_gate_log(self) -> Any: ...
     def principal(self) -> Any: ...
     def access_policy(self) -> Any: ...
     def observation_read(self) -> Any: ...
@@ -93,6 +95,9 @@ class SqliteRepositoryFactory:
 
     def detector_gate_log(self) -> SqliteDetectorGateLogRepository:
         return SqliteDetectorGateLogRepository(self._session)
+
+    def pre_vlm_gate_log(self) -> SqlitePreVlmGateLogRepository:
+        return SqlitePreVlmGateLogRepository(self._session)
 
     def principal(self) -> SqlitePrincipalRepository:
         return SqlitePrincipalRepository(self._session)
@@ -139,6 +144,7 @@ class PostgresRepositoryFactory:
             PostgresModelCallLogRepository,
             PostgresObservationReadRepository,
             PostgresPrincipalRepository,
+            PostgresPreVlmGateLogRepository,
             PostgresPublicationRepository,
             PostgresSearchContextRepository,
             PostgresTaskQueueRepository,
@@ -156,6 +162,7 @@ class PostgresRepositoryFactory:
         self._analysis_unit_cls = PostgresAnalysisUnitRepository
         self._model_call_log_cls = PostgresModelCallLogRepository
         self._detector_gate_log_cls = PostgresDetectorGateLogRepository
+        self._pre_vlm_gate_log_cls = PostgresPreVlmGateLogRepository
         self._principal_cls = PostgresPrincipalRepository
         self._access_policy_cls = PostgresAccessPolicyRepository
         self._observation_read_cls = PostgresObservationReadRepository
@@ -189,6 +196,9 @@ class PostgresRepositoryFactory:
 
     def detector_gate_log(self):  # type: ignore[no-untyped-def]
         return self._detector_gate_log_cls(self._session)
+
+    def pre_vlm_gate_log(self):  # type: ignore[no-untyped-def]
+        return self._pre_vlm_gate_log_cls(self._session)
 
     def principal(self):  # type: ignore[no-untyped-def]
         return self._principal_cls(self._session)

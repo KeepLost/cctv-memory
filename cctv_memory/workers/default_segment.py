@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from cctv_memory.application.publication import PublicationService
 from cctv_memory.config.settings import DetectorGateRuleSection
 from cctv_memory.contracts.analysis import AnalysisUnit, DetectorGateLog, ModelCallLog
+from cctv_memory.contracts.pre_vlm_gate import GateProfile
 from cctv_memory.contracts.pipeline import PublishObservationRecordsCommand
 from cctv_memory.contracts.vlm import VlmObservationOutput, VlmSegmentRequest
 from cctv_memory.domain import policies
@@ -34,6 +35,7 @@ from cctv_memory.repositories.camera import CameraRepository
 from cctv_memory.repositories.principal import AccessPolicyRepository
 from cctv_memory.repositories.video_source import VideoSourceRepository
 from cctv_memory.services.detector_gate import DetectorGatePort
+from cctv_memory.services.pre_vlm_gate import PreVlmGatePort
 from cctv_memory.services.timeline_recorder import TimelineRecorder
 from cctv_memory.services.video_processor import VideoProcessorPort
 from cctv_memory.services.vlm_analyzer import VlmAnalyzerPort
@@ -59,6 +61,7 @@ from cctv_memory.workers.frame_selection import (
     cleanup_selected_frames,
     select_frames_for_unit,
 )
+from cctv_memory.workers.pre_vlm_gate import run_pre_vlm_gate
 from cctv_memory.workers.retry import (
     RetryPolicy,
     VlmAttempt,
@@ -132,6 +135,8 @@ class DefaultSegmentProcessor:
         detector_gate_provider: str = "mock",
         detector_gate_model_id: str = "mock-detector-v1",
         detector_gate_rules: list[DetectorGateRuleSection] | None = None,
+        pre_vlm_gate: PreVlmGatePort | None = None,
+        pre_vlm_gate_profile: GateProfile | None = None,
     ) -> None:
         self._video_sources = video_sources
         self._jobs = jobs
@@ -184,6 +189,8 @@ class DefaultSegmentProcessor:
         self._detector_gate_provider = detector_gate_provider
         self._detector_gate_model_id = detector_gate_model_id
         self._detector_gate_rules = list(detector_gate_rules or [])
+        self._pre_vlm_gate = pre_vlm_gate
+        self._pre_vlm_gate_profile = pre_vlm_gate_profile
 
     def _db_write(self, write: Callable[[], None]) -> None:
         """Run a terminal DB write with bounded transient-lock retry (state hardening)."""
@@ -745,7 +752,48 @@ class DefaultSegmentProcessor:
             return UnitOutcome.FAILED
 
         detector_summary: dict[str, object] | None = None
-        if self._detector_gate_enabled and self._detector_gate is not None:
+        gate_bundle = run_pre_vlm_gate(
+            gate=self._pre_vlm_gate,
+            profile=self._pre_vlm_gate_profile,
+            media_refs_input=selection.media_refs_input,
+            analysis_job_id=analysis_job_id,
+            scale_task_id=self._scale_task_id,
+            unit_id=unit_id,
+            video_id=video_id,
+            analysis_scale=AnalysisScale.DEFAULT_SEGMENT,
+            unit_kind="default_segment_window",
+            segment_start_ms=start_ms,
+            segment_end_ms=end_ms,
+            provider=(self._pre_vlm_gate_profile.provider if self._pre_vlm_gate_profile else ""),
+            model_id=self._pre_vlm_gate_profile.model_id if self._pre_vlm_gate_profile else None,
+        )
+        if gate_bundle is not None:
+            detector_summary = gate_bundle.summary
+            if not gate_bundle.triggered_vlm:
+                self._timeline_event(
+                    "pre_vlm_gate_suppressed",
+                    unit_id=unit_id,
+                    analysis_job_id=analysis_job_id,
+                    video_id=video_id,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    mcall_id=mcall_id,
+                    status="suppressed_vlm",
+                    metadata={"decision": gate_bundle.decision.model_dump(mode="json")},
+                )
+                return self._publish_detector_only_unit(
+                    unit_id=unit_id,
+                    analysis_job_id=analysis_job_id,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    ctx=ctx,
+                    model_version=model_version,
+                    prompt_version=prompt_version,
+                    pipeline_version=self._pipeline_version,
+                    detector_summary=gate_bundle.summary,
+                    frame_uris=frame_uris,
+                )
+        elif self._detector_gate_enabled and self._detector_gate is not None:
             gate_log_id = new_id("gate")
             gate_started = datetime.now(UTC)
             frame_inputs = build_detector_frame_inputs(selection.media_refs_input)

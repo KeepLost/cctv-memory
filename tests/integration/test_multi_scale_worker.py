@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from cctv_memory.application.ingestion import IngestionService
+from cctv_memory.config.settings import PreVlmGateRuleSection
 from cctv_memory.contracts.auth import AccessPolicy, AccessPolicyRules, Principal
 from cctv_memory.contracts.search import StartObservationSearchRequest
 from cctv_memory.contracts.video import SubmitVideoSourceRequest
@@ -226,6 +227,43 @@ def test_no_motion_skips_high_freq(runtime_factory) -> None:  # type: ignore[no-
     runtime.dispose()
 
 
+def test_pre_vlm_gate_suppresses_high_freq_without_active_record(runtime_factory) -> None:  # type: ignore[no-untyped-def]
+    runtime = runtime_factory()
+    _seed(runtime, "svc_hf_gate")
+    job_id = _submit(runtime, "svc_hf_gate", enable_high_freq=True, key="hf-gate-negative")
+    cfg = runtime.config
+    cfg.pipeline.video_metadata_mode = "static"
+    cfg.pipeline.pre_vlm_gate.enabled = True
+    cfg.pipeline.pre_vlm_gate.provider = "mock"
+    cfg.pipeline.pre_vlm_gate.mock.positive_labels = []
+    cfg.pipeline.pre_vlm_gate.high_freq_event.enabled = True
+    cfg.pipeline.pre_vlm_gate.high_freq_event.rules = [
+        PreVlmGateRuleSection(label="person", min_positive_frame_ratio=0.5)
+    ]
+
+    worker = AnalysisWorker(
+        runtime,
+        video_processor=StaticVideoProcessor(duration_ms=30_000),
+        motion_detector=_FakeMotionDetector(_motion_samples()),
+    )
+    assert worker.process_one() is not None
+
+    with runtime.session() as session:
+        from cctv_memory.infrastructure.db.models import tables as orm
+        from sqlalchemy import func, select
+
+        hf_records = session.scalar(
+            select(func.count())
+            .select_from(orm.ObservationRecord)
+            .where(orm.ObservationRecord.analysis_scale == AnalysisScale.HIGH_FREQ_EVENT.value)
+        )
+        assert hf_records == 0
+        logs = list(session.scalars(select(orm.PreVlmGateLog)))
+        assert logs
+        assert all(log.analysis_scale == AnalysisScale.HIGH_FREQ_EVENT.value for log in logs)
+    runtime.dispose()
+
+
 def test_high_freq_records_are_searchable_by_scale(runtime_factory) -> None:  # type: ignore[no-untyped-def]
     runtime = runtime_factory()
     _seed(runtime, "svc_hf4")
@@ -405,4 +443,3 @@ def test_benchmark_pool_includes_high_freq_records(runtime_factory) -> None:  # 
     assert AnalysisScale.HIGH_FREQ_EVENT in scales
     assert AnalysisScale.DEFAULT_SEGMENT in scales
     runtime.dispose()
-

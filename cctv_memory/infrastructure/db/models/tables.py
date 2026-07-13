@@ -345,6 +345,42 @@ class DetectorGateLog(Base):
     )
 
 
+class PreVlmGateLog(Base):
+    __tablename__ = "pre_vlm_gate_logs"
+
+    gate_log_id: Mapped[str] = mapped_column(String, primary_key=True)
+    analysis_job_id: Mapped[str] = mapped_column(String, nullable=False)
+    scale_task_id: Mapped[str] = mapped_column(String, nullable=False)
+    unit_id: Mapped[str] = mapped_column(String, nullable=False)
+    video_id: Mapped[str] = mapped_column(String, nullable=False)
+    analysis_scale: Mapped[str] = mapped_column(String, nullable=False)
+    unit_kind: Mapped[str] = mapped_column(String, nullable=False)
+    profile_name: Mapped[str] = mapped_column(String, nullable=False)
+    segment_start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    segment_end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    model_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    decision_json: Mapped[str] = mapped_column(_JSONB(), nullable=False)
+    signals_json: Mapped[str] = mapped_column(_JSONB(), nullable=False, default="[]")
+    frame_evidence_json: Mapped[str] = mapped_column(_JSONB(), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String, nullable=False)
+    rule_config_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    suppression_policy: Mapped[str | None] = mapped_column(String, nullable=True)
+    media_refs_json: Mapped[str] = mapped_column(_JSONB(), nullable=False, default="[]")
+    artifact_refs_json: Mapped[str] = mapped_column(_JSONB(), nullable=False, default="[]")
+    started_at: Mapped[str | None] = mapped_column(_TS(), nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(_TS(), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(_TS(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("segment_start_ms < segment_end_ms", name="ck_pre_vlm_gate_time_order"),
+        Index("idx_pre_vlm_gate_unit", "unit_id", "created_at"),
+        Index("idx_pre_vlm_gate_job", "analysis_job_id", "analysis_scale"),
+    )
+
+
 class AnalysisTimelineEvent(Base):
     __tablename__ = "analysis_timeline_events"
 

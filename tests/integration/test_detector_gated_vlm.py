@@ -6,6 +6,7 @@ from typing import Any
 from cctv_memory.application.ingestion import IngestionService
 from cctv_memory.application.search import SearchService
 from cctv_memory.config.settings import DetectorGateRuleSection
+from cctv_memory.config.settings import PreVlmGateRuleSection
 from cctv_memory.contracts.auth import AccessPolicy, AccessPolicyRules, Principal
 from cctv_memory.contracts.search import StartObservationSearchRequest
 from cctv_memory.contracts.video import SubmitVideoSourceRequest
@@ -202,3 +203,30 @@ def test_detector_gate_table_exists(engine: Any) -> None:
     with engine.connect() as conn:
         names = {row[0] for row in conn.exec_driver_sql("SELECT name FROM sqlite_master")}
     assert "detector_gate_logs" in names
+
+
+def test_pre_vlm_gate_negative_publishes_gate_only_record(runtime_factory: Any) -> None:
+    runtime = runtime_factory()
+    cfg = runtime.config
+    cfg.pipeline.video_metadata_mode = "static"
+    cfg.pipeline.static_duration_ms = 12_000
+    cfg.pipeline.default_segment.window_seconds = 12
+    cfg.pipeline.default_segment.overlap_seconds = 0
+    cfg.pipeline.default_segment.frames_per_segment = 4
+    cfg.pipeline.pre_vlm_gate.enabled = True
+    cfg.pipeline.pre_vlm_gate.provider = "mock"
+    cfg.pipeline.pre_vlm_gate.mock.positive_labels = []
+    cfg.pipeline.pre_vlm_gate.default_segment.enabled = True
+    cfg.pipeline.pre_vlm_gate.default_segment.rules = [
+        PreVlmGateRuleSection(label="person", min_positive_frame_ratio=0.5)
+    ]
+    _submit_one(runtime, key="pre-vlm-default-negative")
+    vlm = _CountingVlm()
+
+    AnalysisWorker(runtime, video_processor=StaticVideoProcessor(duration_ms=12_000), vlm=vlm).process_one()
+
+    assert vlm.calls == 0
+    with runtime.session() as session:
+        assert session.scalar(select(func.count()).select_from(orm.ObservationRecord)) == 1
+        assert session.scalar(select(func.count()).select_from(orm.PreVlmGateLog)) == 1
+    runtime.dispose()

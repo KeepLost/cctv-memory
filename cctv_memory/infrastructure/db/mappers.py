@@ -24,6 +24,7 @@ from cctv_memory.contracts.analysis import (
     HighFreqTrigger,
     ModelCallLog,
 )
+from cctv_memory.contracts.pre_vlm_gate import PreVlmGateLog
 from cctv_memory.contracts.audit import AuditEvent
 from cctv_memory.contracts.auth import (
     AccessPolicy,
@@ -497,6 +498,67 @@ def detector_gate_log_to_dto(row: orm.DetectorGateLog) -> DetectorGateLog:
         frame_evidence=_loads_list(row.frame_evidence_json),
         evidence_hash=row.evidence_hash,
         rule_config_hash=row.rule_config_hash,
+        media_refs=_loads_list(row.media_refs_json),
+        artifact_refs=_loads_list(row.artifact_refs_json),
+        started_at=_dt(row.started_at),
+        finished_at=_dt(row.finished_at),
+        duration_ms=row.duration_ms,
+        created_at=_dt(row.created_at),
+    )
+
+
+def pre_vlm_gate_log_to_orm(dto: PreVlmGateLog) -> orm.PreVlmGateLog:
+    now = datetime.now().astimezone().isoformat()
+    return orm.PreVlmGateLog(
+        gate_log_id=dto.gate_log_id,
+        analysis_job_id=dto.analysis_job_id,
+        scale_task_id=dto.scale_task_id,
+        unit_id=dto.unit_id,
+        video_id=dto.video_id,
+        analysis_scale=dto.analysis_scale.value,
+        unit_kind=dto.unit_kind,
+        profile_name=dto.profile_name,
+        segment_start_ms=dto.segment_start_ms,
+        segment_end_ms=dto.segment_end_ms,
+        provider=dto.provider,
+        model_id=dto.model_id,
+        status=dto.status,
+        decision_json=json.dumps(dto.decision),
+        signals_json=json.dumps(dto.signals),
+        frame_evidence_json=json.dumps(dto.frame_evidence),
+        evidence_hash=dto.evidence_hash,
+        rule_config_hash=dto.rule_config_hash,
+        suppression_policy=dto.suppression_policy,
+        media_refs_json=json.dumps(dto.media_refs),
+        artifact_refs_json=json.dumps(dto.artifact_refs),
+        started_at=_iso(dto.started_at),
+        finished_at=_iso(dto.finished_at),
+        duration_ms=dto.duration_ms,
+        created_at=_iso(dto.created_at) or now,
+    )
+
+
+def pre_vlm_gate_log_to_dto(row: orm.PreVlmGateLog) -> PreVlmGateLog:
+    return PreVlmGateLog(
+        gate_log_id=row.gate_log_id,
+        analysis_job_id=row.analysis_job_id,
+        scale_task_id=row.scale_task_id,
+        unit_id=row.unit_id,
+        video_id=row.video_id,
+        analysis_scale=AnalysisScale(row.analysis_scale),
+        unit_kind=row.unit_kind,
+        profile_name=row.profile_name,
+        segment_start_ms=row.segment_start_ms,
+        segment_end_ms=row.segment_end_ms,
+        provider=row.provider,
+        model_id=row.model_id,
+        status=row.status,
+        decision=_loads_obj(row.decision_json),
+        signals=_loads_list(row.signals_json),
+        frame_evidence=_loads_list(row.frame_evidence_json),
+        evidence_hash=row.evidence_hash,
+        rule_config_hash=row.rule_config_hash,
+        suppression_policy=row.suppression_policy,
         media_refs=_loads_list(row.media_refs_json),
         artifact_refs=_loads_list(row.artifact_refs_json),
         started_at=_dt(row.started_at),

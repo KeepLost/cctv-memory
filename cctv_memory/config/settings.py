@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -244,6 +244,52 @@ class DetectorGateSection(BaseModel):
     mock_confidence: float = Field(default=0.9, ge=0.0, le=1.0)
 
 
+class PreVlmGateRuleSection(BaseModel):
+    rule_id: str | None = None
+    signal_type: str = "object_detection"
+    label: str = "person"
+    min_positive_frame_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    action: str = "call_vlm"
+
+
+class PreVlmGateScaleProfileSection(BaseModel):
+    enabled: bool = False
+    profile_name: str = "default"
+    suppression_policy: str = "skip_without_record"
+    rules: list[PreVlmGateRuleSection] = Field(default_factory=list)
+    force_vlm_on_trigger_reasons: list[str] = Field(default_factory=list)
+
+
+class PreVlmGateMockSection(BaseModel):
+    positive_labels: list[str] = Field(default_factory=list)
+    positive_frame_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+
+
+class PreVlmGateSection(BaseModel):
+    enabled: bool = False
+    provider: str = "mock"
+    model_id: str = "mock-detector-v1"
+    google_vision_url: str = "http://nginx:7070/api/google/v1/images:annotate"
+    timeout_seconds: float = Field(default=30.0, gt=0)
+    max_results: int = Field(default=10, gt=0)
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    mock: PreVlmGateMockSection = Field(default_factory=PreVlmGateMockSection)
+    default_segment: PreVlmGateScaleProfileSection = Field(
+        default_factory=lambda: PreVlmGateScaleProfileSection(
+            profile_name="default_segment",
+            suppression_policy="publish_gate_only_record",
+        )
+    )
+    high_freq_event: PreVlmGateScaleProfileSection = Field(
+        default_factory=lambda: PreVlmGateScaleProfileSection(
+            profile_name="high_freq_event",
+            suppression_policy="skip_without_record",
+        )
+    )
+
+
 class FrameStreamSection(BaseModel):
     """OpenCV streaming-decode + frame-selection knobs (frame-stream-selector
     -cache-design §2.4/§4/§8.1).
@@ -295,6 +341,7 @@ class CrossScaleSection(BaseModel):
 class PipelineSection(BaseModel):
     default_segment: DefaultSegmentSection = Field(default_factory=DefaultSegmentSection)
     detector_gate: DetectorGateSection = Field(default_factory=DetectorGateSection)
+    pre_vlm_gate: PreVlmGateSection = Field(default_factory=PreVlmGateSection)
     motion_scan: MotionScanSection = Field(default_factory=MotionScanSection)
     high_freq_event: HighFreqEventSection = Field(default_factory=HighFreqEventSection)
     cross_scale: CrossScaleSection = Field(default_factory=lambda: CrossScaleSection())
@@ -311,6 +358,31 @@ class PipelineSection(BaseModel):
     decode_backend: str = "opencv"
     decode_fallback_to_ffmpeg: bool = True
     frame_stream: FrameStreamSection = Field(default_factory=FrameStreamSection)
+
+    @model_validator(mode="after")
+    def _map_legacy_detector_gate(self) -> PipelineSection:
+        if self.pre_vlm_gate.enabled or not self.detector_gate.enabled:
+            return self
+        self.pre_vlm_gate.enabled = True
+        self.pre_vlm_gate.provider = self.detector_gate.provider
+        self.pre_vlm_gate.model_id = self.detector_gate.model_id
+        self.pre_vlm_gate.mock.positive_labels = list(self.detector_gate.mock_positive_labels)
+        self.pre_vlm_gate.mock.positive_frame_ratio = self.detector_gate.mock_positive_frame_ratio
+        self.pre_vlm_gate.mock.confidence = self.detector_gate.mock_confidence
+        self.pre_vlm_gate.default_segment.enabled = True
+        self.pre_vlm_gate.default_segment.profile_name = "legacy_detector_gate_default_segment"
+        self.pre_vlm_gate.default_segment.suppression_policy = "publish_gate_only_record"
+        self.pre_vlm_gate.default_segment.rules = [
+            PreVlmGateRuleSection(
+                signal_type="object_detection",
+                label=r.label,
+                min_positive_frame_ratio=r.min_positive_frame_ratio,
+                min_confidence=r.min_confidence,
+                action=r.action,
+            )
+            for r in self.detector_gate.rules
+        ]
+        return self
 
 
 class FeaturesSection(BaseModel):

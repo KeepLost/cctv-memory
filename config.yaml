@@ -94,6 +94,30 @@ pipeline:
     mock_positive_labels: []
     mock_positive_frame_ratio: 0.0
     mock_confidence: 0.9
+  pre_vlm_gate:
+    enabled: false
+    provider: mock
+    model_id: mock-detector-v1
+    google_vision_url: http://nginx:7070/api/google/v1/images:annotate
+    timeout_seconds: 30.0
+    max_results: 10
+    min_confidence: null
+    mock:
+      positive_labels: []
+      positive_frame_ratio: 0.0
+      confidence: 0.9
+    default_segment:
+      enabled: false
+      profile_name: default_segment
+      suppression_policy: publish_gate_only_record
+      rules: []
+      force_vlm_on_trigger_reasons: []
+    high_freq_event:
+      enabled: false
+      profile_name: high_freq_event
+      suppression_policy: skip_without_record
+      rules: []
+      force_vlm_on_trigger_reasons: []
   motion_scan:
     method: frame_diff
     threshold: 0.15

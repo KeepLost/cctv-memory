@@ -23,6 +23,7 @@ from cctv_memory.contracts.audit import AuditEvent
 from cctv_memory.contracts.auth import AccessPolicy, AuthorizedScope, Principal
 from cctv_memory.contracts.observation import ObservationRecord
 from cctv_memory.contracts.pipeline import PublicationResult, PublishObservationRecordsCommand
+from cctv_memory.contracts.pre_vlm_gate import PreVlmGateLog
 from cctv_memory.contracts.search import SearchCandidate, SearchContext, SearchRevision
 from cctv_memory.contracts.task import Task
 from cctv_memory.contracts.timeline import AnalysisTimelineEvent
@@ -48,6 +49,7 @@ from cctv_memory.infrastructure.db.repositories.admin import (
     SqliteHighFreqTriggerRepository,
     SqliteModelCallLogRepository,
     SqlitePrincipalRepository,
+    SqlitePreVlmGateLogRepository,
     SqliteVideoSourceRepository,
 )
 from cctv_memory.infrastructure.db.repositories.audit import SqliteAuditRepository
@@ -806,6 +808,64 @@ class PostgresDetectorGateLogRepository(SqliteDetectorGateLogRepository):
         row = self._session.get(orm.DetectorGateLog, log.gate_log_id)
         assert row is not None
         return mappers.detector_gate_log_to_dto(row)
+
+
+class PostgresPreVlmGateLogRepository(SqlitePreVlmGateLogRepository):
+    def create_log(self, log: PreVlmGateLog) -> PreVlmGateLog:
+        self._session.execute(
+            text(
+                """
+                INSERT INTO pre_vlm_gate_logs(
+                  gate_log_id, analysis_job_id, scale_task_id, unit_id, video_id,
+                  analysis_scale, unit_kind, profile_name, segment_start_ms,
+                  segment_end_ms, provider, model_id, status, decision_json,
+                  signals_json, frame_evidence_json, evidence_hash, rule_config_hash,
+                  suppression_policy, media_refs_json, artifact_refs_json, started_at,
+                  finished_at, duration_ms, created_at
+                ) VALUES (
+                  :gate_log_id, :analysis_job_id, :scale_task_id, :unit_id, :video_id,
+                  :analysis_scale, :unit_kind, :profile_name, :segment_start_ms,
+                  :segment_end_ms, :provider, :model_id, :status,
+                  CAST(:decision_json AS jsonb), CAST(:signals_json AS jsonb),
+                  CAST(:frame_evidence_json AS jsonb), :evidence_hash,
+                  :rule_config_hash, :suppression_policy, CAST(:media_refs_json AS jsonb),
+                  CAST(:artifact_refs_json AS jsonb), :started_at, :finished_at,
+                  :duration_ms, :created_at
+                )
+                """
+            ),
+            {
+                "gate_log_id": log.gate_log_id,
+                "analysis_job_id": log.analysis_job_id,
+                "scale_task_id": log.scale_task_id,
+                "unit_id": log.unit_id,
+                "video_id": log.video_id,
+                "analysis_scale": log.analysis_scale.value,
+                "unit_kind": log.unit_kind,
+                "profile_name": log.profile_name,
+                "segment_start_ms": log.segment_start_ms,
+                "segment_end_ms": log.segment_end_ms,
+                "provider": log.provider,
+                "model_id": log.model_id,
+                "status": log.status,
+                "decision_json": _json(log.decision),
+                "signals_json": _json(log.signals),
+                "frame_evidence_json": _json(log.frame_evidence),
+                "evidence_hash": log.evidence_hash,
+                "rule_config_hash": log.rule_config_hash,
+                "suppression_policy": log.suppression_policy,
+                "media_refs_json": _json(log.media_refs),
+                "artifact_refs_json": _json(log.artifact_refs),
+                "started_at": log.started_at,
+                "finished_at": log.finished_at,
+                "duration_ms": log.duration_ms,
+                "created_at": _as_dt_or_now(log.created_at),
+            },
+        )
+        self._session.flush()
+        row = self._session.get(orm.PreVlmGateLog, log.gate_log_id)
+        assert row is not None
+        return mappers.pre_vlm_gate_log_to_dto(row)
 
 
 class PostgresTimelineRepository(SqliteTimelineRepository):

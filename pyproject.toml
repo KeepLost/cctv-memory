@@ -64,4 +64,5 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
     "postgres: tests requiring a live PostgreSQL/pgvector database via CCTV_MEMORY_TEST_POSTGRES_DSN",
+    "integration: tests that call external services when explicitly enabled",
 ]

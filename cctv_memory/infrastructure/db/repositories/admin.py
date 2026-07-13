@@ -23,6 +23,7 @@ from cctv_memory.contracts.analysis import (
     ModelCallLog,
 )
 from cctv_memory.contracts.auth import AccessPolicy, Principal
+from cctv_memory.contracts.pre_vlm_gate import PreVlmGateLog
 from cctv_memory.contracts.video import (
     CameraDevice,
     CameraLocation,
@@ -616,6 +617,31 @@ class SqliteDetectorGateLogRepository:
             .order_by(orm.DetectorGateLog.created_at)
         )
         return [mappers.detector_gate_log_to_dto(r) for r in rows]
+
+
+class SqlitePreVlmGateLogRepository:
+    """PreVlmGateLog repository SQLite adapter."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def create_log(self, log: PreVlmGateLog) -> PreVlmGateLog:
+        row = mappers.pre_vlm_gate_log_to_orm(log)
+        self._session.add(row)
+        self._session.flush()
+        return mappers.pre_vlm_gate_log_to_dto(row)
+
+    def get_log(self, gate_log_id: str) -> PreVlmGateLog | None:
+        row = self._session.get(orm.PreVlmGateLog, gate_log_id)
+        return mappers.pre_vlm_gate_log_to_dto(row) if row else None
+
+    def list_by_unit(self, unit_id: str) -> list[PreVlmGateLog]:
+        rows = self._session.scalars(
+            select(orm.PreVlmGateLog)
+            .where(orm.PreVlmGateLog.unit_id == unit_id)
+            .order_by(orm.PreVlmGateLog.created_at)
+        )
+        return [mappers.pre_vlm_gate_log_to_dto(r) for r in rows]
 
 
 class SqlitePrincipalRepository:

@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from cctv_memory.config.settings import DetectorGateRuleSection
+from cctv_memory.contracts.pre_vlm_gate import GateRule, GateSignal
+from cctv_memory.domain.enums import AnalysisScale
+from cctv_memory.domain.policies.pre_vlm_gate import decide_pre_vlm_gate
 from cctv_memory.services.detector_gate import DetectorFrameInput, DetectorFrameResult
 from cctv_memory.services.frame_stream import SelectedFrame
 
@@ -57,35 +60,42 @@ def decide_detector_gate(
     gate_log_id: str,
 ) -> DetectorGateDecisionBundle:
     evidence = [_frame_result_to_evidence(r) for r in results]
-    rule_payload = [r.model_dump(mode="json") for r in rules]
-    rule_hash = _hash_json(rule_payload)
-    evidence_hash = _hash_json(evidence)
-    ratios: dict[str, float] = {}
-    matched: list[str] = []
-    frame_count = len(results)
-    for rule in rules:
-        if frame_count == 0:
-            ratio = 0.0
-        else:
-            positive = sum(
-                1
-                for r in results
-                if any(
-                    d.label == rule.label and d.confidence >= rule.min_confidence
-                    for d in r.detections
-                )
+    gate_rules = [
+        GateRule(
+            signal_type="object_detection",
+            label=r.label,
+            min_positive_frame_ratio=r.min_positive_frame_ratio,
+            min_confidence=r.min_confidence,
+            action=r.action,  # type: ignore[arg-type]
+        )
+        for r in rules
+    ]
+    gate_bundle = decide_pre_vlm_gate(
+        signals=[
+            GateSignal(
+                signal_type="object_detection",
+                provider=provider,
+                model_id=model_id,
+                frame_count=len(results),
+                frame_evidence=evidence,
             )
-            ratio = positive / frame_count
-        ratios[rule.label] = ratio
-        if rule.action == "call_vlm" and ratio >= rule.min_positive_frame_ratio:
-            matched.append(f"{rule.label}.positive_frame_ratio>={rule.min_positive_frame_ratio}")
-    triggered = bool(matched)
+        ],
+        rules=gate_rules,
+        analysis_scale=AnalysisScale.DEFAULT_SEGMENT,
+        suppression_policy="publish_gate_only_record",
+    )
+    decision_data = gate_bundle.decision.model_dump(mode="json")
+    triggered = gate_bundle.decision.triggered_vlm
+    matched = list(gate_bundle.decision.matched_rules)
+    ratios = dict(gate_bundle.decision.positive_frame_ratio_by_label)
+    evidence_hash = gate_bundle.decision.evidence_hash
+    rule_hash = gate_bundle.decision.rule_config_hash or _hash_json([])
     decision = {
         "schema_version": "detector_gate_decision_v1",
         "triggered_vlm": triggered,
         "matched_rules": matched,
         "positive_frame_ratio_by_label": ratios,
-        "reason": "matched gate rules" if triggered else "no gate rule matched",
+        "reason": decision_data["reason"],
         "rule_config_hash": rule_hash,
         "evidence_hash": evidence_hash,
     }

@@ -36,9 +36,15 @@ from typing import Any, cast
 from cctv_memory.application.analysis_orchestrator import AnalysisOrchestrator
 from cctv_memory.application.publication import PublicationService
 from cctv_memory.contracts.analysis import AnalysisScaleTask, AnalysisUnit
+from cctv_memory.contracts.pre_vlm_gate import GateProfile, GateRule, PreVlmGateLog
 from cctv_memory.contracts.task import Task
 from cctv_memory.domain.enums import AnalysisScale, JobStatus, TaskStatus
 from cctv_memory.infrastructure.runtime import Runtime
+from cctv_memory.infrastructure.object_detection.google_vision_adapter import (
+    GoogleVisionObjectDetectionAdapter,
+)
+from cctv_memory.infrastructure.object_detection.mock_adapter import MockObjectDetectionAdapter
+from cctv_memory.infrastructure.pre_vlm_gate.gate_runner import PreVlmGateRunner
 from cctv_memory.infrastructure.video.ffprobe_adapter import (
     FfprobeVideoProcessor,
     SegmentFrameVideoProcessor,
@@ -60,6 +66,8 @@ from cctv_memory.infrastructure.vlm.mock_adapter import MockVlmAnalyzer
 from cctv_memory.infrastructure.vlm.real_adapter import RealVlmAnalyzer
 from cctv_memory.services.detector_gate import DetectorGatePort
 from cctv_memory.services.motion_detector import MotionDetectorPort
+from cctv_memory.services.object_detection import ObjectDetectionPort
+from cctv_memory.services.pre_vlm_gate import PreVlmGatePort
 from cctv_memory.services.timeline_recorder import TimelineRecorder
 from cctv_memory.services.video_processor import VideoProcessorPort
 from cctv_memory.services.vlm_analyzer import VlmAnalyzerPort
@@ -180,12 +188,16 @@ class AnalysisWorker:
         vlm: VlmAnalyzerPort | None = None,
         motion_detector: MotionDetectorPort | None = None,
         detector_gate: DetectorGatePort | None = None,
+        object_detection: ObjectDetectionPort | None = None,
+        pre_vlm_gate: PreVlmGatePort | None = None,
     ) -> None:
         self._runtime = runtime
         self._video_processor = video_processor or _default_video_processor(runtime)
         self._vlm = vlm or _default_vlm(runtime)
         self._motion_detector = motion_detector
         self._detector_gate = detector_gate or self._default_detector_gate()
+        self._object_detection = object_detection or self._default_object_detection()
+        self._pre_vlm_gate = pre_vlm_gate or self._default_pre_vlm_gate()
         # cv2 cold-start race fix (task cctv-memory-20260617-1441): import + sanity-
         # warm OpenCV ONCE, single-threaded, HERE in __init__ — before any unit/job
         # ThreadPoolExecutor fans out. opencv-python's bootstrap() is not thread
@@ -214,6 +226,88 @@ class AnalysisWorker:
         # serialize on ONE writer. VLM calls stay outside it (§9.1).
         self._write_coordinator = runtime.write_coordinator
         self._timeline: TimelineRecorder = runtime.timeline_recorder()
+
+    def _default_object_detection(self) -> ObjectDetectionPort | None:
+        cfg = getattr(self._runtime.config.pipeline, "pre_vlm_gate", None)
+        legacy = self._runtime.config.pipeline.detector_gate
+        provider = getattr(cfg, "provider", legacy.provider if legacy.enabled else "mock")
+        if provider in ("mock", "object_detection_mock"):
+            source = getattr(cfg, "mock", None)
+            return MockObjectDetectionAdapter(
+                positive_labels=getattr(source, "positive_labels", legacy.mock_positive_labels),
+                positive_frame_ratio=getattr(
+                    source, "positive_frame_ratio", legacy.mock_positive_frame_ratio
+                ),
+                confidence=getattr(source, "confidence", legacy.mock_confidence),
+                model_id=getattr(cfg, "model_id", legacy.model_id),
+            )
+        if provider == "google_vision":
+            return GoogleVisionObjectDetectionAdapter(
+                base_url=getattr(
+                    cfg,
+                    "google_vision_url",
+                    "http://nginx:7070/api/google/v1/images:annotate",
+                ),
+                timeout_seconds=getattr(cfg, "timeout_seconds", 30.0),
+                model_id=getattr(cfg, "model_id", "google-vision-object-localization"),
+            )
+        if legacy.enabled:
+            return None
+        return None
+
+    def _default_pre_vlm_gate(self) -> PreVlmGatePort | None:
+        if self._object_detection is None:
+            return None
+        cfg = getattr(self._runtime.config.pipeline, "pre_vlm_gate", None)
+
+        def _write_log(log: PreVlmGateLog) -> PreVlmGateLog:
+            with self._write_coordinator.write(), self._runtime.session() as session:
+                return self._runtime.repositories(session).pre_vlm_gate_log().create_log(log)
+
+        return PreVlmGateRunner(
+            object_detection=self._object_detection,
+            log_writer=_write_log,
+            max_results=getattr(cfg, "max_results", 10),
+            min_confidence=getattr(cfg, "min_confidence", None),
+        )
+
+    def _pre_vlm_gate_profile(self, scale: AnalysisScale) -> GateProfile | None:
+        cfg = getattr(self._runtime.config.pipeline, "pre_vlm_gate", None)
+        if cfg is None:
+            return None
+        if not getattr(cfg, "enabled", False):
+            return None
+        section_name = "default_segment" if scale is AnalysisScale.DEFAULT_SEGMENT else "high_freq_event"
+        section = getattr(cfg, section_name, None)
+        if section is None or not getattr(section, "enabled", False):
+            return None
+        default_policy = (
+            "publish_gate_only_record"
+            if scale is AnalysisScale.DEFAULT_SEGMENT
+            else "skip_without_record"
+        )
+        return GateProfile(
+            profile_name=getattr(section, "profile_name", section_name),
+            enabled=True,
+            analysis_scale=scale,
+            suppression_policy=getattr(section, "suppression_policy", default_policy),
+            provider=getattr(cfg, "provider", "mock"),
+            model_id=getattr(cfg, "model_id", None),
+            rules=[
+                GateRule(
+                    rule_id=getattr(r, "rule_id", None),
+                    signal_type=getattr(r, "signal_type", "object_detection"),
+                    label=r.label,
+                    min_positive_frame_ratio=r.min_positive_frame_ratio,
+                    min_confidence=r.min_confidence,
+                    action=r.action,
+                )
+                for r in getattr(section, "rules", [])
+            ],
+            force_vlm_on_trigger_reasons=list(
+                getattr(section, "force_vlm_on_trigger_reasons", [])
+            ),
+        )
 
     def _default_detector_gate(self) -> DetectorGatePort | None:
         cfg = self._runtime.config.pipeline.detector_gate
@@ -743,6 +837,8 @@ class AnalysisWorker:
             detector_gate_provider=cfg.pipeline.detector_gate.provider,
             detector_gate_model_id=cfg.pipeline.detector_gate.model_id,
             detector_gate_rules=cfg.pipeline.detector_gate.rules,
+            pre_vlm_gate=self._pre_vlm_gate,
+            pre_vlm_gate_profile=self._pre_vlm_gate_profile(AnalysisScale.DEFAULT_SEGMENT),
         )
 
     def _build_high_freq_processor(  # type: ignore[no-untyped-def]
@@ -782,6 +878,8 @@ class AnalysisWorker:
             terminal_write_max_attempts=cfg.vlm.terminal_write_max_attempts,
             terminal_write_backoff_ms=cfg.vlm.terminal_write_backoff_ms,
             provider_options=cfg.vlm.extra_body,
+            pre_vlm_gate=self._pre_vlm_gate,
+            pre_vlm_gate_profile=self._pre_vlm_gate_profile(AnalysisScale.HIGH_FREQ_EVENT),
         )
 
     def _process_scale_task(  # type: ignore[no-untyped-def]
@@ -1057,6 +1155,8 @@ class AnalysisWorker:
             detector_gate_provider=cfg.pipeline.detector_gate.provider,
             detector_gate_model_id=cfg.pipeline.detector_gate.model_id,
             detector_gate_rules=cfg.pipeline.detector_gate.rules,
+            pre_vlm_gate=self._pre_vlm_gate,
+            pre_vlm_gate_profile=self._pre_vlm_gate_profile(AnalysisScale.DEFAULT_SEGMENT),
         )
         return processor.process(analysis_job_id, video_id)
 
@@ -1123,6 +1223,8 @@ class AnalysisWorker:
             retry_policy=self._unit_retry_policy(),
             terminal_write_max_attempts=self._runtime.config.vlm.terminal_write_max_attempts,
             terminal_write_backoff_ms=self._runtime.config.vlm.terminal_write_backoff_ms,
+            pre_vlm_gate=self._pre_vlm_gate,
+            pre_vlm_gate_profile=self._pre_vlm_gate_profile(AnalysisScale.HIGH_FREQ_EVENT),
         )
         return processor.process(analysis_job_id, video_id)
 
