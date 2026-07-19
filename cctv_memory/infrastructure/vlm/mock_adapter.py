@@ -31,7 +31,10 @@ _TAG_POOL: tuple[tuple[str, ...], ...] = (
 class MockVlmAnalyzer:
     """Deterministic, offline mock VLM analyzer."""
 
-    def analyze_segment(self, request: VlmSegmentRequest) -> VlmObservationOutput:
+    def analyze_segment(
+        self, request: VlmSegmentRequest, *, strict_schema: bool = False
+    ) -> VlmObservationOutput:
+        _ = strict_schema
         bucket = (request.segment_start_ms // 1000) % len(_TAG_POOL)
         tags = list(_TAG_POOL[bucket])
         seconds = request.segment_start_ms // 1000

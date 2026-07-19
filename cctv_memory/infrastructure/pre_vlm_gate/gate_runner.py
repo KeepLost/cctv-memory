@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Callable
 
 from cctv_memory.contracts.object_detection import (
     ObjectDetectionBatchRequest,
+    ObjectDetectionBatchResult,
     ObjectDetectionImageInput,
     ObjectDetectionRequestOptions,
 )
@@ -19,6 +21,7 @@ from cctv_memory.contracts.pre_vlm_gate import (
     PreVlmGateLog,
     PreVlmGateRequest,
 )
+from cctv_memory.domain.exceptions import ObjectDetectionSchemaValidationError
 from cctv_memory.domain.policies.pre_vlm_gate import decide_pre_vlm_gate
 from cctv_memory.repositories.analysis import PreVlmGateLogRepository
 from cctv_memory.services.object_detection import ObjectDetectionPort
@@ -36,19 +39,26 @@ class PreVlmGateRunner(PreVlmGatePort):
         log_writer: Callable[[PreVlmGateLog], PreVlmGateLog] | None = None,
         max_results: int = 10,
         min_confidence: float | None = None,
+        schema_regenerate_max_attempts: int = 0,
     ) -> None:
         self._object_detection = object_detection
         self._logs = logs
         self._log_writer = log_writer
         self._max_results = max_results
         self._min_confidence = min_confidence
+        self._schema_regenerate_max_attempts = schema_regenerate_max_attempts
 
     def evaluate(self, request: PreVlmGateRequest) -> GateDecisionBundle:
         started = datetime.now(UTC)
         if not request.profile.enabled:
             bundle = self._disabled_bundle(request)
         else:
-            signal = self._object_detection_signal(request)
+            try:
+                signal = self._object_detection_signal(request)
+            except ObjectDetectionSchemaValidationError as exc:
+                finished = datetime.now(UTC)
+                self._write_failure_log(request, exc, started, finished)
+                raise
             bundle = decide_pre_vlm_gate(
                 signals=[signal],
                 rules=request.profile.rules,
@@ -101,7 +111,7 @@ class PreVlmGateRunner(PreVlmGatePort):
                 min_confidence=self._min_confidence,
             ),
         )
-        result = self._object_detection.detect_objects(od_request)
+        result = self._detect_with_schema_retry(od_request)
         frame_evidence = []
         failed = False
         for image_result in result.results:
@@ -136,6 +146,90 @@ class PreVlmGateRunner(PreVlmGatePort):
             summary={"usage": result.usage.model_dump(mode="json") if result.usage else None},
             frame_evidence=frame_evidence,
         )
+
+    def _detect_with_schema_retry(
+        self, request: ObjectDetectionBatchRequest
+    ) -> ObjectDetectionBatchResult:
+        attempts: list[dict[str, object]] = []
+        max_attempts = 1 + self._schema_regenerate_max_attempts
+        last_error: ObjectDetectionSchemaValidationError | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = self._object_detection.detect_objects(request)
+                payload = result.model_dump(mode="json")
+                validated = ObjectDetectionBatchResult.model_validate(payload)
+                if len(validated.results) != len(request.images):
+                    raise ObjectDetectionSchemaValidationError(
+                        "Object detection result count does not match request image count",
+                        stage="schema_validation_failed",
+                        raw_response=json.dumps(payload),
+                        parsed_payload=payload,
+                        validation_errors=[{"msg": "result count mismatch"}],
+                        provider=request.provider,
+                        model_id=validated.model_id,
+                    )
+                return validated
+            except ObjectDetectionSchemaValidationError as exc:
+                last_error = exc
+                attempts.append(
+                    {
+                        "attempt": attempt,
+                        "status": "failed",
+                        "error_type": type(exc).__name__,
+                        "validation_status": exc.stage,
+                        "schema_details": exc.to_details(),
+                    }
+                )
+                if attempt >= max_attempts:
+                    exc.attempts.extend(attempts)
+                    raise
+        assert last_error is not None
+        raise last_error
+
+    def _write_failure_log(
+        self,
+        request: PreVlmGateRequest,
+        exc: ObjectDetectionSchemaValidationError,
+        started: datetime,
+        finished: datetime,
+    ) -> None:
+        log = PreVlmGateLog(
+            gate_log_id=request.gate_log_id,
+            analysis_job_id=request.analysis_job_id,
+            scale_task_id=request.scale_task_id,
+            unit_id=request.unit_id,
+            video_id=request.video_id,
+            analysis_scale=request.analysis_scale,
+            unit_kind=request.unit_kind,
+            profile_name=request.profile.profile_name,
+            segment_start_ms=request.segment_start_ms,
+            segment_end_ms=request.segment_end_ms,
+            provider=request.provider,
+            model_id=request.model_id,
+            status="failed",
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:500],
+            raw_text_output=exc.raw_response,
+            parsed_output=exc.parsed_payload,
+            validation_status=exc.stage,
+            attempt_details=exc.attempts or [exc.to_details()],
+            decision={},
+            signals=[],
+            frame_evidence=[],
+            evidence_hash="sha256:schema_failure",
+            rule_config_hash=None,
+            suppression_policy=request.profile.suppression_policy,
+            started_at=started,
+            finished_at=finished,
+            duration_ms=int((finished - started).total_seconds() * 1000),
+            created_at=finished,
+        )
+        if self._log_writer is not None:
+            self._log_writer(log)
+        elif self._logs is not None:
+            self._logs.create_log(log)
+        else:
+            raise RuntimeError("PreVlmGateRunner requires logs or log_writer")
 
     def _image_input(self, frame: object, index: int) -> ObjectDetectionImageInput:
         from cctv_memory.contracts.pre_vlm_gate import GateFrameInput

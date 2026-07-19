@@ -24,7 +24,6 @@ from cctv_memory.contracts.analysis import (
     HighFreqTrigger,
     ModelCallLog,
 )
-from cctv_memory.contracts.pre_vlm_gate import PreVlmGateLog
 from cctv_memory.contracts.audit import AuditEvent
 from cctv_memory.contracts.auth import (
     AccessPolicy,
@@ -32,6 +31,7 @@ from cctv_memory.contracts.auth import (
     Principal,
 )
 from cctv_memory.contracts.observation import ObservationRecord
+from cctv_memory.contracts.pre_vlm_gate import PreVlmGateLog
 from cctv_memory.contracts.search import (
     SearchCandidate,
     SearchContext,
@@ -523,6 +523,12 @@ def pre_vlm_gate_log_to_orm(dto: PreVlmGateLog) -> orm.PreVlmGateLog:
         provider=dto.provider,
         model_id=dto.model_id,
         status=dto.status,
+        error_type=dto.error_type,
+        error_message=dto.error_message,
+        raw_text_output=dto.raw_text_output,
+        parsed_output_json=json.dumps(dto.parsed_output) if dto.parsed_output is not None else None,
+        validation_status=dto.validation_status,
+        attempt_details_json=json.dumps(dto.attempt_details),
         decision_json=json.dumps(dto.decision),
         signals_json=json.dumps(dto.signals),
         frame_evidence_json=json.dumps(dto.frame_evidence),
@@ -553,6 +559,12 @@ def pre_vlm_gate_log_to_dto(row: orm.PreVlmGateLog) -> PreVlmGateLog:
         provider=row.provider,
         model_id=row.model_id,
         status=row.status,
+        error_type=row.error_type,
+        error_message=row.error_message,
+        raw_text_output=row.raw_text_output,
+        parsed_output=_loads_obj(row.parsed_output_json) if row.parsed_output_json else None,
+        validation_status=row.validation_status,
+        attempt_details=_loads_list(row.attempt_details_json),
         decision=_loads_obj(row.decision_json),
         signals=_loads_list(row.signals_json),
         frame_evidence=_loads_list(row.frame_evidence_json),

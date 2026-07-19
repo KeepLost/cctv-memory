@@ -230,7 +230,7 @@ def test_no_motion_skips_high_freq(runtime_factory) -> None:  # type: ignore[no-
 def test_pre_vlm_gate_suppresses_high_freq_without_active_record(runtime_factory) -> None:  # type: ignore[no-untyped-def]
     runtime = runtime_factory()
     _seed(runtime, "svc_hf_gate")
-    job_id = _submit(runtime, "svc_hf_gate", enable_high_freq=True, key="hf-gate-negative")
+    _submit(runtime, "svc_hf_gate", enable_high_freq=True, key="hf-gate-negative")
     cfg = runtime.config
     cfg.pipeline.video_metadata_mode = "static"
     cfg.pipeline.pre_vlm_gate.enabled = True

@@ -39,12 +39,12 @@ from cctv_memory.contracts.analysis import AnalysisScaleTask, AnalysisUnit
 from cctv_memory.contracts.pre_vlm_gate import GateProfile, GateRule, PreVlmGateLog
 from cctv_memory.contracts.task import Task
 from cctv_memory.domain.enums import AnalysisScale, JobStatus, TaskStatus
-from cctv_memory.infrastructure.runtime import Runtime
 from cctv_memory.infrastructure.object_detection.google_vision_adapter import (
     GoogleVisionObjectDetectionAdapter,
 )
 from cctv_memory.infrastructure.object_detection.mock_adapter import MockObjectDetectionAdapter
 from cctv_memory.infrastructure.pre_vlm_gate.gate_runner import PreVlmGateRunner
+from cctv_memory.infrastructure.runtime import Runtime
 from cctv_memory.infrastructure.video.ffprobe_adapter import (
     FfprobeVideoProcessor,
     SegmentFrameVideoProcessor,
@@ -269,6 +269,9 @@ class AnalysisWorker:
             log_writer=_write_log,
             max_results=getattr(cfg, "max_results", 10),
             min_confidence=getattr(cfg, "min_confidence", None),
+            schema_regenerate_max_attempts=getattr(
+                cfg, "schema_regenerate_max_attempts", 0
+            ),
         )
 
     def _pre_vlm_gate_profile(self, scale: AnalysisScale) -> GateProfile | None:
@@ -277,7 +280,11 @@ class AnalysisWorker:
             return None
         if not getattr(cfg, "enabled", False):
             return None
-        section_name = "default_segment" if scale is AnalysisScale.DEFAULT_SEGMENT else "high_freq_event"
+        section_name = (
+            "default_segment"
+            if scale is AnalysisScale.DEFAULT_SEGMENT
+            else "high_freq_event"
+        )
         section = getattr(cfg, section_name, None)
         if section is None or not getattr(section, "enabled", False):
             return None
@@ -357,6 +364,8 @@ class AnalysisWorker:
             backoff_base_ms=vlm.retry_backoff_base_ms,
             backoff_cap_ms=vlm.retry_backoff_cap_ms,
             jitter=vlm.retry_jitter,
+            schema_regenerate_max_attempts=vlm.schema_regenerate_max_attempts,
+            schema_retry_backoff_ms=vlm.schema_retry_backoff_ms,
         )
 
     def _db_write[T](self, write: Callable[[], T]) -> T:

@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from cctv_memory.contracts.object_detection import (
     ObjectDetectionBatchRequest,
     ObjectDetectionImageInput,

@@ -593,6 +593,14 @@ class SqliteModelCallLogRepository:
         )
         return [mappers.model_call_log_to_dto(r) for r in rows]
 
+    def list_by_job(self, analysis_job_id: str) -> list[ModelCallLog]:
+        rows = self._session.scalars(
+            select(orm.ModelCallLog)
+            .where(orm.ModelCallLog.analysis_job_id == analysis_job_id)
+            .order_by(orm.ModelCallLog.created_at)
+        )
+        return [mappers.model_call_log_to_dto(r) for r in rows]
+
 
 class SqliteDetectorGateLogRepository:
     """DetectorGateLog repository SQLite adapter."""
@@ -639,6 +647,14 @@ class SqlitePreVlmGateLogRepository:
         rows = self._session.scalars(
             select(orm.PreVlmGateLog)
             .where(orm.PreVlmGateLog.unit_id == unit_id)
+            .order_by(orm.PreVlmGateLog.created_at)
+        )
+        return [mappers.pre_vlm_gate_log_to_dto(r) for r in rows]
+
+    def list_by_job(self, analysis_job_id: str) -> list[PreVlmGateLog]:
+        rows = self._session.scalars(
+            select(orm.PreVlmGateLog)
+            .where(orm.PreVlmGateLog.analysis_job_id == analysis_job_id)
             .order_by(orm.PreVlmGateLog.created_at)
         )
         return [mappers.pre_vlm_gate_log_to_dto(r) for r in rows]

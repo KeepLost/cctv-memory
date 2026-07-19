@@ -19,6 +19,8 @@ class VlmAnalyzerPort(Protocol):
     policy/security fields (enforced by the contract's ``extra="forbid"``).
     """
 
-    def analyze_segment(self, request: VlmSegmentRequest) -> VlmObservationOutput:
+    def analyze_segment(
+        self, request: VlmSegmentRequest, *, strict_schema: bool = False
+    ) -> VlmObservationOutput:
         """Analyze a video segment and return validated VLM output."""
         ...

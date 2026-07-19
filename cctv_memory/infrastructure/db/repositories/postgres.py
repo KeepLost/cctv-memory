@@ -48,8 +48,8 @@ from cctv_memory.infrastructure.db.repositories.admin import (
     SqliteDetectorGateLogRepository,
     SqliteHighFreqTriggerRepository,
     SqliteModelCallLogRepository,
-    SqlitePrincipalRepository,
     SqlitePreVlmGateLogRepository,
+    SqlitePrincipalRepository,
     SqliteVideoSourceRepository,
 )
 from cctv_memory.infrastructure.db.repositories.audit import SqliteAuditRepository
@@ -818,14 +818,17 @@ class PostgresPreVlmGateLogRepository(SqlitePreVlmGateLogRepository):
                 INSERT INTO pre_vlm_gate_logs(
                   gate_log_id, analysis_job_id, scale_task_id, unit_id, video_id,
                   analysis_scale, unit_kind, profile_name, segment_start_ms,
-                  segment_end_ms, provider, model_id, status, decision_json,
-                  signals_json, frame_evidence_json, evidence_hash, rule_config_hash,
-                  suppression_policy, media_refs_json, artifact_refs_json, started_at,
-                  finished_at, duration_ms, created_at
+                  segment_end_ms, provider, model_id, status, error_type,
+                  error_message, raw_text_output, parsed_output_json, validation_status,
+                  attempt_details_json, decision_json, signals_json, frame_evidence_json,
+                  evidence_hash, rule_config_hash, suppression_policy, media_refs_json,
+                  artifact_refs_json, started_at, finished_at, duration_ms, created_at
                 ) VALUES (
                   :gate_log_id, :analysis_job_id, :scale_task_id, :unit_id, :video_id,
                   :analysis_scale, :unit_kind, :profile_name, :segment_start_ms,
-                  :segment_end_ms, :provider, :model_id, :status,
+                  :segment_end_ms, :provider, :model_id, :status, :error_type,
+                  :error_message, :raw_text_output, CAST(:parsed_output_json AS jsonb),
+                  :validation_status, CAST(:attempt_details_json AS jsonb),
                   CAST(:decision_json AS jsonb), CAST(:signals_json AS jsonb),
                   CAST(:frame_evidence_json AS jsonb), :evidence_hash,
                   :rule_config_hash, :suppression_policy, CAST(:media_refs_json AS jsonb),
@@ -848,6 +851,14 @@ class PostgresPreVlmGateLogRepository(SqlitePreVlmGateLogRepository):
                 "provider": log.provider,
                 "model_id": log.model_id,
                 "status": log.status,
+                "error_type": log.error_type,
+                "error_message": log.error_message,
+                "raw_text_output": log.raw_text_output,
+                "parsed_output_json": (
+                    _json(log.parsed_output) if log.parsed_output is not None else None
+                ),
+                "validation_status": log.validation_status,
+                "attempt_details_json": _json(log.attempt_details),
                 "decision_json": _json(log.decision),
                 "signals_json": _json(log.signals),
                 "frame_evidence_json": _json(log.frame_evidence),

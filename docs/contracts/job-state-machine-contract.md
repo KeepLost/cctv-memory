@@ -108,8 +108,8 @@ running -> skipped        # 抽帧零帧 near-EOF: skipped(insufficient_frames)
 > - 仅重试**瞬时 provider 错误**（`VlmProviderError`：超时 / 传输 / 5xx / 429 / 冷启动），重试次数
 >   由 `vlm.unit_max_attempts` 决定（默认 3；=1 即旧行为不重试），退避为指数 + 抖动，**每次尝试仍经过
 >   全局 `VlmScheduler`**（并发上限 + 最小请求间隔不被绕过）；
-> - **永久错误不重试**：schema/contract 校验、抽帧失败、`insufficient_frames`、发布错误、存储损坏 ——
->   立即落终态；
+> - schema/contract 校验失败只按 `vlm.schema_regenerate_max_attempts` 做严格 schema 重生成；抽帧失败、
+>   `insufficient_frames`、发布错误、存储损坏不重试，立即落终态；
 > - 重试预算耗尽 -> unit `failed`，`last_error_code=vlm_provider_error`（无 unit 残留 `running`）；
 > - **审计**：每次失败的尝试各记一条 `status=failed` 的 ModelCallLog（`attempt_count` 为真实尝试序号，
 >   `attempt_details` 记录错误类型/是否瞬时/退避毫秒）；最终成功记一条 `status=succeeded` 的 ModelCallLog
@@ -124,9 +124,10 @@ running -> skipped        # 抽帧零帧 near-EOF: skipped(insufficient_frames)
 ### 1.35 retryable 与永久错误（unit 层）
 
 ```text
-transient (retry): vlm_provider_error  (timeout/transport/5xx/429/cold-start)
-permanent (no retry): vlm_schema_validation_failed, frame_extraction_failed,
-                      insufficient_frames(=skipped), publication/storage errors
+transient provider retry: vlm_provider_error  (timeout/transport/5xx/429/cold-start)
+schema regeneration retry: vlm_schema_validation_failed within configured budget
+permanent (no model retry): frame_extraction_failed, insufficient_frames(=skipped),
+                            publication/storage errors
 ```
 
 ---

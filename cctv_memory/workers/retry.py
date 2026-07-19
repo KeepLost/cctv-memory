@@ -27,7 +27,7 @@ import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from cctv_memory.contracts.vlm import VlmObservationOutput
 
@@ -55,12 +55,23 @@ def is_transient_vlm_error(exc: BaseException) -> bool:
     return False
 
 
+def is_schema_vlm_error(exc: BaseException) -> bool:
+    """Return True if a VLM exception is schema/parse validation failure."""
+    for klass in type(exc).__mro__:
+        if klass.__name__ in {
+            "VlmSchemaValidationError",
+            "ModelOutputSchemaValidationError",
+        }:
+            return True
+    return False
+
+
 def vlm_failure_error_code(exc: BaseException) -> str:
     """Map a VLM-call exception to the unit ``last_error_code`` (error-code-contract §4)."""
     name = type(exc).__name__
     if name == "VlmProviderError" or "provider" in name.lower():
         return "vlm_provider_error"
-    if name == "VlmSchemaValidationError":
+    if is_schema_vlm_error(exc):
         return "vlm_schema_validation_failed"
     return "analysis_unit_failed"
 
@@ -127,12 +138,18 @@ class RetryPolicy:
     backoff_base_ms: int = 500
     backoff_cap_ms: int = 8_000
     jitter: float = 0.2
+    schema_regenerate_max_attempts: int = 0
+    schema_retry_backoff_ms: int = 0
 
     def __post_init__(self) -> None:
         if self.max_attempts < 1:
             raise ValueError("max_attempts must be >= 1")
+        if self.schema_regenerate_max_attempts < 0:
+            raise ValueError("schema_regenerate_max_attempts must be >= 0")
         if self.backoff_base_ms < 0 or self.backoff_cap_ms < 0:
             raise ValueError("backoff must be >= 0")
+        if self.schema_retry_backoff_ms < 0:
+            raise ValueError("schema_retry_backoff_ms must be >= 0")
         if not (0.0 <= self.jitter <= 1.0):
             raise ValueError("jitter must be in [0, 1]")
 
@@ -147,6 +164,10 @@ class VlmAttempt:
     error_message: str | None = None
     transient: bool | None = None
     backoff_ms: float | None = None
+    raw_text_output: str | None = None
+    parsed_output: dict[str, Any] | None = None
+    validation_status: str | None = None
+    schema_details: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {"attempt": self.attempt, "status": self.status}
@@ -158,6 +179,10 @@ class VlmAttempt:
             d["transient"] = self.transient
         if self.backoff_ms is not None:
             d["backoff_ms"] = round(self.backoff_ms, 1)
+        if self.validation_status is not None:
+            d["validation_status"] = self.validation_status
+        if self.schema_details is not None:
+            d["schema_details"] = self.schema_details
         return d
 
 
@@ -178,7 +203,7 @@ class VlmRetryResult:
 def execute_vlm_with_retry(
     *,
     request: VlmSegmentRequest,
-    analyze: Callable[[VlmSegmentRequest], VlmObservationOutput],
+    analyze: Callable[..., VlmObservationOutput],
     scheduler_run: Callable[[Callable[[], VlmObservationOutput]], VlmObservationOutput],
     policy: RetryPolicy,
     on_attempt_started: Callable[[int], None] | None = None,
@@ -193,7 +218,8 @@ def execute_vlm_with_retry(
       min-interval still applies to EVERY attempt).
     - On a transient error with budget remaining: record the failed attempt (via
       ``on_attempt_failed``), back off, and retry.
-    - On a permanent error: stop immediately (no retry) and return it.
+    - On schema failure: retry only within the schema-regeneration budget. Each
+      regeneration is a full model attempt through ``scheduler_run``.
     - On success: return the output.
 
     The caller is responsible for writing ModelCallLog rows; this function only invokes
@@ -202,27 +228,46 @@ def execute_vlm_with_retry(
     """
     details: list[dict[str, object]] = []
     last_error: BaseException | None = None
-    for attempt in range(1, policy.max_attempts + 1):
+    provider_failures = 0
+    schema_failures = 0
+    max_total_attempts = policy.max_attempts + policy.schema_regenerate_max_attempts
+    for attempt in range(1, max_total_attempts + 1):
         if on_attempt_started is not None:
             on_attempt_started(attempt)
         try:
-            output = scheduler_run(lambda: analyze(request))
+            strict_schema = schema_failures > 0
+            output = scheduler_run(
+                lambda strict_schema=strict_schema: _call_analyze(
+                    analyze, request, strict_schema
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - classified below; never propagated here
             last_error = exc
             transient = is_transient_vlm_error(exc)
-            has_budget = attempt < policy.max_attempts
-            will_retry = transient and has_budget
+            schema_error = is_schema_vlm_error(exc)
+            if transient:
+                provider_failures += 1
+            if schema_error:
+                schema_failures += 1
+            provider_budget = transient and provider_failures < policy.max_attempts
+            schema_budget = (
+                schema_error and schema_failures <= policy.schema_regenerate_max_attempts
+            )
+            will_retry = provider_budget or schema_budget
             backoff_ms = (
                 compute_backoff_ms(
-                    attempt,
+                    provider_failures,
                     base_ms=policy.backoff_base_ms,
                     cap_ms=policy.backoff_cap_ms,
                     jitter=policy.jitter,
                     rng=rng,
                 )
-                if will_retry
+                if provider_budget
+                else float(policy.schema_retry_backoff_ms)
+                if schema_budget and policy.schema_retry_backoff_ms > 0
                 else None
             )
+            schema_details = _schema_error_details(exc)
             record = VlmAttempt(
                 attempt=attempt,
                 status="failed",
@@ -230,6 +275,10 @@ def execute_vlm_with_retry(
                 error_message=str(exc)[:500],
                 transient=transient,
                 backoff_ms=backoff_ms,
+                raw_text_output=getattr(exc, "raw_response", None),
+                parsed_output=getattr(exc, "parsed_payload", None),
+                validation_status=getattr(exc, "stage", None),
+                schema_details=schema_details,
             )
             details.append(record.to_dict())
             if on_attempt_failed is not None:
@@ -256,6 +305,25 @@ def execute_vlm_with_retry(
         attempts=policy.max_attempts,
         attempt_details=details,
     )
+
+
+def _schema_error_details(exc: BaseException) -> dict[str, Any] | None:
+    to_details = getattr(exc, "to_details", None)
+    if callable(to_details):
+        details = to_details()
+        if isinstance(details, dict):
+            return details
+    return None
+
+
+def _call_analyze(
+    analyze: Callable[..., VlmObservationOutput],
+    request: VlmSegmentRequest,
+    strict_schema: bool,
+) -> VlmObservationOutput:
+    if strict_schema:
+        return analyze(request, strict_schema=strict_schema)
+    return analyze(request)
 
 
 def run_db_write_with_retry[T](

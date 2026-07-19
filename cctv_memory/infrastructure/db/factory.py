@@ -19,8 +19,8 @@ from cctv_memory.infrastructure.db.repositories.admin import (
     SqliteDetectorGateLogRepository,
     SqliteHighFreqTriggerRepository,
     SqliteModelCallLogRepository,
-    SqlitePrincipalRepository,
     SqlitePreVlmGateLogRepository,
+    SqlitePrincipalRepository,
     SqliteVideoSourceRepository,
 )
 from cctv_memory.infrastructure.db.repositories.audit import SqliteAuditRepository
@@ -143,8 +143,8 @@ class PostgresRepositoryFactory:
             PostgresIndexRepository,
             PostgresModelCallLogRepository,
             PostgresObservationReadRepository,
-            PostgresPrincipalRepository,
             PostgresPreVlmGateLogRepository,
+            PostgresPrincipalRepository,
             PostgresPublicationRepository,
             PostgresSearchContextRepository,
             PostgresTaskQueueRepository,

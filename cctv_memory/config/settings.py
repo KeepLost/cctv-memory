@@ -275,6 +275,9 @@ class PreVlmGateSection(BaseModel):
     timeout_seconds: float = Field(default=30.0, gt=0)
     max_results: int = Field(default=10, gt=0)
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    schema_repair_enabled: bool = True
+    schema_regenerate_max_attempts: int = Field(default=1, ge=0)
+    schema_retry_backoff_ms: int = Field(default=0, ge=0)
     mock: PreVlmGateMockSection = Field(default_factory=PreVlmGateMockSection)
     default_segment: PreVlmGateScaleProfileSection = Field(
         default_factory=lambda: PreVlmGateScaleProfileSection(
@@ -425,18 +428,18 @@ class VlmSection(BaseModel):
     # may exceed this, but actual in-flight VLM calls never do.
     max_concurrent_requests: int = Field(default=1, gt=0)
     min_request_interval_ms: int = Field(default=0, ge=0)
-    # Unit-level transient retry (task cctv-memory-20260615-1447). Distinct from the
-    # adapter's in-call ``max_retries`` (transport-level reprompt/transport retry inside a
-    # single logical call): these knobs govern how many times the WORKER re-runs the whole
-    # VLM call for ONE unit when it fails with a TRANSIENT provider error (cold start,
-    # timeout, 5xx, 429). ``unit_max_attempts=1`` disables unit retry (prior behavior).
-    # Default 3 absorbs first-call/cold-start blips. Every attempt still goes through the
-    # global VlmScheduler. Permanent errors (schema/frame/insufficient_frames) are never
-    # retried. Backoff is exponential (base*2^(n-1) capped) with +-jitter.
+    # Unit-level model retry. Provider transient retry and schema regeneration are
+    # both worker-owned so every model attempt goes through the global VlmScheduler.
+    # ``schema_regenerate_max_attempts`` counts extra strict-schema attempts after
+    # mechanical repair/validation fails; 0 disables schema regeneration.
     unit_max_attempts: int = Field(default=3, ge=1)
     retry_backoff_base_ms: int = Field(default=500, ge=0)
     retry_backoff_cap_ms: int = Field(default=8_000, ge=0)
     retry_jitter: float = Field(default=0.2, ge=0.0, le=1.0)
+    schema_repair_enabled: bool = True
+    schema_regenerate_max_attempts: int = Field(default=1, ge=0)
+    schema_regenerate_instruction: str = "strict_json_retry_instruction"
+    schema_retry_backoff_ms: int = Field(default=0, ge=0)
     # Bounded retry for transient terminal DB writes (SQLite lock/busy) so a terminal
     # mark_failed/mark_skipped/success write cannot silently fail and strand a unit
     # ``running`` (no tally-vs-DB divergence). Exhaustion re-raises; the bounded orphan

@@ -56,7 +56,7 @@ def decide_pre_vlm_gate(
             reason=f"force_vlm_on_trigger_reason:{trigger_reason}",
             evidence_hash=evidence_hash,
             rule_config_hash=rule_hash,
-            suppression_policy=suppression_policy,  # type: ignore[arg-type]
+            suppression_policy=suppression_policy,
         )
     elif matched:
         decision = PreVlmGateDecision(
@@ -67,7 +67,7 @@ def decide_pre_vlm_gate(
             reason="matched gate rules",
             evidence_hash=evidence_hash,
             rule_config_hash=rule_hash,
-            suppression_policy=suppression_policy,  # type: ignore[arg-type]
+            suppression_policy=suppression_policy,
         )
     else:
         decision = PreVlmGateDecision(
@@ -78,7 +78,7 @@ def decide_pre_vlm_gate(
             reason="no gate rule matched",
             evidence_hash=evidence_hash,
             rule_config_hash=rule_hash,
-            suppression_policy=suppression_policy,  # type: ignore[arg-type]
+            suppression_policy=suppression_policy,
         )
 
     summary = {

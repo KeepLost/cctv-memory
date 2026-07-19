@@ -10,7 +10,6 @@ from pydantic import Field, model_validator
 from cctv_memory.contracts.common import ContractModel
 from cctv_memory.domain.enums import AnalysisScale
 
-
 PreVlmGateSchemaVersion = Literal["pre_vlm_gate_v1"]
 GateSignalType = Literal["object_detection", "motion", "quality", "custom"]
 GateRuleAction = Literal["call_vlm", "suppress_vlm"]
@@ -123,6 +122,12 @@ class PreVlmGateLog(ContractModel):
     provider: str
     model_id: str | None = None
     status: str = "succeeded"
+    error_type: str | None = None
+    error_message: str | None = None
+    raw_text_output: str | None = None
+    parsed_output: dict[str, Any] | None = None
+    validation_status: str | None = None
+    attempt_details: list[dict[str, Any]] = Field(default_factory=list)
     decision: dict[str, Any] = Field(default_factory=dict)
     signals: list[dict[str, Any]] = Field(default_factory=list)
     frame_evidence: list[dict[str, Any]] = Field(default_factory=list)

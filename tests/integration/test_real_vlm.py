@@ -2,8 +2,8 @@
 
 Two groups:
 1. Network-free unit tests for RealVlmAnalyzer using a fake httpx client
-   (deterministic, bounded, always run): parse, fence-stripping, schema-fail
-   retry, timeout/HTTP error mapping.
+   (deterministic, bounded, always run): parse, fence-stripping, structured
+   schema failures, timeout/HTTP error mapping.
 2. Live end-to-end test gated by LLM_KEY + ffmpeg: generate a short clip, run the
    real pipeline, assert a real ObservationRecord with non-empty text/tags, search
    it, and PRINT the VLM output for manual inspection.
@@ -103,12 +103,14 @@ def test_strips_forbidden_policy_fields(tmp_path: object) -> None:
     assert not hasattr(out, "access_policy_id")
 
 
-def test_schema_failure_after_retries_raises(tmp_path: object) -> None:
+def test_schema_failure_raises_with_raw_response(tmp_path: object) -> None:
     video = generate_dummy_file(tmp_path)
-    # Always returns junk -> retry once -> still junk -> VlmSchemaValidationError.
+    # Schema regeneration is worker/scheduler owned, not a hidden adapter loop.
     adapter = _adapter(_fake_client("not json at all"), max_retries=1)
-    with pytest.raises(VlmSchemaValidationError):
+    with pytest.raises(VlmSchemaValidationError) as excinfo:
         adapter.analyze_segment(_request(tmp_path, str(video)))
+    assert excinfo.value.raw_response == "not json at all"
+    assert excinfo.value.stage == "json_parse_failed"
 
 
 def test_timeout_maps_to_provider_error(tmp_path: object) -> None:
@@ -242,9 +244,8 @@ def test_image_order_is_preserved_in_user_content(tmp_path: object) -> None:
     assert urls[0] != urls[1]
 
 
-def test_strict_retry_does_not_mutate_system_prefix(tmp_path: object) -> None:
-    """P2: a strict retry keeps the system prefix stable; strictness goes to user."""
-    # First response is junk -> triggers one strict retry; second is valid.
+def test_strict_schema_call_does_not_mutate_system_prefix(tmp_path: object) -> None:
+    """P2: a strict scheduler attempt keeps the system prefix stable."""
     import json as _json
 
     from cctv_memory.infrastructure.vlm.prompts import (
@@ -252,17 +253,17 @@ def test_strict_retry_does_not_mutate_system_prefix(tmp_path: object) -> None:
         build_prompt,
     )
 
-    responses = ["not json", _VALID_JSON]
     captured: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append(_json.loads(request.content))
-        body = responses[min(len(captured) - 1, len(responses) - 1)]
-        return httpx.Response(200, json={"choices": [{"message": {"content": body}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": _VALID_JSON}}]})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     frames = _two_frames(tmp_path)
-    _adapter(client, max_retries=1).analyze_segment(_request_with_frames(frames))
+    adapter = _adapter(client, max_retries=1)
+    adapter.analyze_segment(_request_with_frames(frames))
+    adapter.analyze_segment(_request_with_frames(frames), strict_schema=True)
 
     assert len(captured) == 2
     stable = build_prompt(scale=AnalysisScale.DEFAULT_SEGMENT)

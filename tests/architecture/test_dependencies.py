@@ -153,7 +153,9 @@ def test_pre_vlm_gate_dependency_direction() -> None:
         worker_files,
         ("cctv_memory.infrastructure.object_detection", "cctv_memory.infrastructure.pre_vlm_gate"),
     )
-    assert not worker_violations, f"workers should depend on ports/helper seams: {worker_violations}"
+    assert not worker_violations, (
+        f"workers should depend on ports/helper seams: {worker_violations}"
+    )
     infra_files = _iter_python_files("infrastructure/object_detection")
     infra_files += _iter_python_files("infrastructure/pre_vlm_gate")
     assert not _violations(infra_files, ("cctv_memory.application", "cctv_memory.api"))

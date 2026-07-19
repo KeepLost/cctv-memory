@@ -112,7 +112,7 @@ def test_execute_vlm_retries_transient_then_succeeds() -> None:
 
     calls = {"n": 0}
 
-    def analyze(_req):  # type: ignore[no-untyped-def]
+    def analyze(_req, _strict_schema: bool = False):  # type: ignore[no-untyped-def]
         calls["n"] += 1
         if calls["n"] == 1:
             raise VlmProviderError("cold start")
@@ -139,7 +139,7 @@ def test_execute_vlm_exhausts_transient_budget() -> None:
     sched = _RoutedScheduler()
     failed: list[int] = []
 
-    def analyze(_req):  # type: ignore[no-untyped-def]
+    def analyze(_req, _strict_schema: bool = False):  # type: ignore[no-untyped-def]
         raise VlmProviderError("still down")
 
     result = execute_vlm_with_retry(
@@ -161,7 +161,7 @@ def test_execute_vlm_permanent_error_not_retried() -> None:
     sched = _RoutedScheduler()
     failed: list[int] = []
 
-    def analyze(_req):  # type: ignore[no-untyped-def]
+    def analyze(_req, _strict_schema: bool = False):  # type: ignore[no-untyped-def]
         raise VlmSchemaValidationError("bad schema")
 
     result = execute_vlm_with_retry(
@@ -176,6 +176,62 @@ def test_execute_vlm_permanent_error_not_retried() -> None:
     assert result.attempts == 1  # NO retry for permanent errors
     assert sched.runs == 1
     assert failed == [1]
+
+
+def test_execute_vlm_schema_regeneration_uses_scheduler_and_succeeds() -> None:
+    sched = _RoutedScheduler()
+    strict_flags: list[bool] = []
+
+    def analyze(_req, strict_schema: bool = False):  # type: ignore[no-untyped-def]
+        strict_flags.append(strict_schema)
+        if not strict_schema:
+            raise VlmSchemaValidationError(
+                "bad schema",
+                stage="schema_validation_failed",
+                raw_response='{"static":"only"}',
+                parsed_payload={"static": "only"},
+            )
+        return _vlm_output()
+
+    result = execute_vlm_with_retry(
+        request=object(),  # type: ignore[arg-type]
+        analyze=analyze,
+        scheduler_run=sched.run,
+        policy=RetryPolicy(
+            max_attempts=1,
+            schema_regenerate_max_attempts=1,
+            schema_retry_backoff_ms=0,
+        ),
+        sleep=lambda _s: None,
+    )
+    assert result.error is None
+    assert result.attempts == 2
+    assert strict_flags == [False, True]
+    assert sched.runs == 2
+    assert result.attempt_details[0]["validation_status"] == "schema_validation_failed"
+
+
+def test_execute_vlm_schema_regeneration_budget_exhausts() -> None:
+    sched = _RoutedScheduler()
+
+    def analyze(_req, strict_schema: bool = False):  # type: ignore[no-untyped-def]
+        _ = strict_schema
+        raise VlmSchemaValidationError("bad schema", raw_response="still bad")
+
+    result = execute_vlm_with_retry(
+        request=object(),  # type: ignore[arg-type]
+        analyze=analyze,
+        scheduler_run=sched.run,
+        policy=RetryPolicy(
+            max_attempts=1,
+            schema_regenerate_max_attempts=2,
+            schema_retry_backoff_ms=0,
+        ),
+        sleep=lambda _s: None,
+    )
+    assert isinstance(result.error, VlmSchemaValidationError)
+    assert result.attempts == 3
+    assert sched.runs == 3
 
 
 def test_vlm_attempt_to_dict_is_compact() -> None:
@@ -274,7 +330,8 @@ class _FlakyVlm:
     def __init__(self) -> None:
         self.calls = 0
 
-    def analyze_segment(self, request):  # type: ignore[no-untyped-def]
+    def analyze_segment(self, request, strict_schema: bool = False):  # type: ignore[no-untyped-def]
+        _ = strict_schema
         self.calls += 1
         if self.calls == 1:
             raise VlmProviderError("cold start / first call failed")
@@ -285,7 +342,8 @@ class _AlwaysProviderErrorVlm:
     def __init__(self) -> None:
         self.calls = 0
 
-    def analyze_segment(self, request):  # type: ignore[no-untyped-def]
+    def analyze_segment(self, request, strict_schema: bool = False):  # type: ignore[no-untyped-def]
+        _ = strict_schema
         self.calls += 1
         raise VlmProviderError("provider permanently down")
 
@@ -294,9 +352,16 @@ class _PermanentSchemaVlm:
     def __init__(self) -> None:
         self.calls = 0
 
-    def analyze_segment(self, request):  # type: ignore[no-untyped-def]
+    def analyze_segment(self, request, strict_schema: bool = False):  # type: ignore[no-untyped-def]
+        _ = strict_schema
         self.calls += 1
-        raise VlmSchemaValidationError("schema invalid after adapter budget")
+        raise VlmSchemaValidationError(
+            "schema invalid after adapter budget",
+            stage="schema_validation_failed",
+            raw_response='{"static":"s"}',
+            parsed_payload={"static": "s"},
+            validation_errors=[{"loc": ("dynamic",), "msg": "Field required"}],
+        )
 
 
 def _seed(runtime, pid: str) -> None:  # type: ignore[no-untyped-def]
@@ -424,7 +489,7 @@ def test_all_attempts_fail_default_unit_failed_no_running(runtime_factory) -> No
     assert all(st.status is not TaskStatus.RUNNING for st in scale_tasks)
 
 
-def test_permanent_error_not_retried_default(runtime_factory) -> None:  # type: ignore[no-untyped-def]
+def test_schema_error_regenerates_then_fails_default(runtime_factory) -> None:  # type: ignore[no-untyped-def]
     runtime = runtime_factory()
     _configure_retry(runtime, attempts=4)
     _seed(runtime, "svc_perm")
@@ -437,14 +502,19 @@ def test_permanent_error_not_retried_default(runtime_factory) -> None:  # type: 
     assert not any(u.status is TaskStatus.RUNNING for u in units)
     assert units and all(u.status is TaskStatus.FAILED for u in units)
     assert all(u.last_error_code == "vlm_schema_validation_failed" for u in units)
-    # NO unit-level retry: exactly one attempt per unit, one FAILED log per unit.
+    # Schema regeneration is a scheduler-routed model attempt, separate from
+    # transient provider retry. Default budget is one regeneration.
     for unit in units:
         unit_logs = [m for m in logs if m.unit_id == unit.unit_id]
-        assert len(unit_logs) == 1
-        assert unit_logs[0].attempt_count == 1
-        assert unit.attempt_count == 1
-    # one VLM call per unit (no retry).
-    assert vlm.calls == len(units)
+        assert len(unit_logs) == 2
+        assert [log.attempt_count for log in unit_logs] == [1, 2]
+        for log in unit_logs:
+            assert log.raw_text_output == '{"static":"s"}'
+            assert log.parsed_output == {"static": "s"}
+            assert log.validation_status == "schema_validation_failed"
+            assert log.attempt_details[0]["schema_details"]["validation_errors"]
+        assert unit.attempt_count == 2
+    assert vlm.calls == len(units) * 2
 
 
 def test_idempotent_active_records_after_retry_success(runtime_factory) -> None:  # type: ignore[no-untyped-def]

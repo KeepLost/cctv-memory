@@ -480,6 +480,12 @@ segment_end_ms INTEGER NOT NULL
 provider TEXT NOT NULL
 model_id TEXT NULL
 status TEXT NOT NULL
+error_type TEXT NULL
+error_message TEXT NULL
+raw_text_output TEXT NULL
+parsed_output_json TEXT NULL
+validation_status TEXT NULL
+attempt_details_json TEXT NOT NULL DEFAULT '[]'
 decision_json TEXT NOT NULL
 frame_evidence_json TEXT NOT NULL
 evidence_hash TEXT NOT NULL

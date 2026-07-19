@@ -14,9 +14,11 @@ completions endpoint. Two input shapes (vlm-analysis-contract §1; selected by
   with a video MIME works. Audio is stripped upstream unless explicitly enabled.
 
 Pure HTTP (httpx, sync, bounded timeout). No subprocess. Output is parsed and
-validated into ``VlmObservationOutput``; on failure it retries once with an added
-strict-JSON reminder, then raises ``VlmSchemaValidationError``. HTTP/timeout
-failures raise ``VlmProviderError`` (mapped to vlm_provider_error / retryable).
+validated into ``VlmObservationOutput``. Schema failure raises a structured
+``VlmSchemaValidationError`` carrying full raw response text; schema regeneration
+is worker/scheduler-owned so no hidden adapter model loop bypasses VlmScheduler.
+HTTP/timeout failures raise ``VlmProviderError`` (mapped to vlm_provider_error /
+retryable).
 
 Cache-friendly message layout (task cctv-memory-20260616-1339, P2): the STABLE
 prompt (schema + rules, selected by analysis_scale) is sent as the ``system``
@@ -39,38 +41,18 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import ValidationError
 
 from cctv_memory.contracts.vlm import VlmObservationOutput, VlmSegmentRequest
 from cctv_memory.domain.exceptions import DomainError, VlmSchemaValidationError
 from cctv_memory.infrastructure.vlm.prompts import STRICT_RETRY_INSTRUCTION, build_prompt
+from cctv_memory.services.model_output_validation import (
+    ModelOutputValidationFailure,
+    validate_json_model_output,
+)
 
 
 class VlmProviderError(DomainError):
     """Transient provider/transport failure (maps to vlm_provider_error, retryable)."""
-
-
-def _strip_code_fences(text: str) -> str:
-    """Remove ```json ... ``` / ``` ... ``` fences and surrounding whitespace."""
-    s = text.strip()
-    if s.startswith("```"):
-        # drop the first fence line (``` or ```json)
-        newline = s.find("\n")
-        if newline != -1:
-            s = s[newline + 1 :]
-        if s.rstrip().endswith("```"):
-            s = s.rstrip()[: -3]
-    return s.strip()
-
-
-def _extract_json_object(text: str) -> str:
-    """Return the substring from the first '{' to the last '}' (defensive)."""
-    cleaned = _strip_code_fences(text)
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return cleaned[start : end + 1]
-    return cleaned
 
 
 class RealVlmAnalyzer:
@@ -98,7 +80,9 @@ class RealVlmAnalyzer:
         # An injected client (tests) avoids real network; otherwise create one.
         self._client = client
 
-    def analyze_segment(self, request: VlmSegmentRequest) -> VlmObservationOutput:
+    def analyze_segment(
+        self, request: VlmSegmentRequest, *, strict_schema: bool = False
+    ) -> VlmObservationOutput:
         content_parts = self._build_media_parts(request)
 
         # Cache-friendly layout (task cctv-memory-20260616-1339, P2): the STABLE
@@ -110,44 +94,31 @@ class RealVlmAnalyzer:
         # user text segment instead, preserving prefix stability).
         system_prompt = build_prompt(scale=request.analysis_scale)
 
-        last_error: Exception | None = None
-        # attempt 0 = normal; subsequent attempts add a strict JSON reminder as a
-        # trailing user segment (the system prefix stays byte-stable for caching).
-        for attempt in range(self._max_retries + 1):
-            try:
-                content = self._call_api(
-                    content_parts, system_prompt, strict=attempt > 0
-                )
-            except VlmProviderError as exc:
-                # Transient provider/transport errors are retryable (error-code
-                # contract). Retry within the attempt budget, then re-raise.
-                last_error = exc
-                if attempt < self._max_retries:
-                    continue
-                raise
-            try:
-                payload = json.loads(_extract_json_object(content))
-            except (json.JSONDecodeError, ValueError) as exc:
-                last_error = exc
-                continue
-            # Drop any forbidden fields the model may have added (defense in depth;
-            # the contract also forbids extras, so we strip rather than fail on them).
-            payload = self._sanitize(payload)
-            try:
-                return VlmObservationOutput.model_validate(payload)
-            except ValidationError as exc:
-                last_error = exc
-                continue
-
-        raise VlmSchemaValidationError(
-            f"VLM output failed schema validation after {self._max_retries + 1} attempts: "
-            f"{type(last_error).__name__ if last_error else 'unknown'}"
+        content = self._call_api(content_parts, system_prompt, strict=strict_schema)
+        result = validate_json_model_output(
+            raw_response=content,
+            schema_type=VlmObservationOutput,
+            forbidden_fields=self._forbidden_fields(),
         )
+        if isinstance(result, ModelOutputValidationFailure):
+            raise VlmSchemaValidationError(
+                result.message,
+                stage=result.stage,
+                raw_response=result.raw_response,
+                parsed_payload=result.repaired_payload or result.parsed_payload,
+                validation_errors=result.validation_errors,
+                repair_attempted=result.repair_attempted,
+                repair_succeeded=result.repair_succeeded,
+                provider="real",
+                model_id=self._model_id,
+                attempts=[result.to_attempt_detail()],
+            )
+        return result.value
 
     @staticmethod
-    def _sanitize(payload: dict[str, object]) -> dict[str, object]:
-        """Remove system-derived/forbidden keys the model must not control."""
-        forbidden = {
+    def _forbidden_fields() -> set[str]:
+        """System-derived/forbidden keys the model must not control."""
+        return {
             "access_policy_id",
             "security_level",
             "camera_id",
@@ -156,7 +127,6 @@ class RealVlmAnalyzer:
             "observed_end_time",
             "record_id",
         }
-        return {k: v for k, v in payload.items() if k not in forbidden}
 
     def _build_media_parts(self, request: VlmSegmentRequest) -> list[dict[str, object]]:
         """Build the multimodal content parts for this segment.

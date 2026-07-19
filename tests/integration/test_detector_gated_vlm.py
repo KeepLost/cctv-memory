@@ -5,8 +5,7 @@ from typing import Any
 
 from cctv_memory.application.ingestion import IngestionService
 from cctv_memory.application.search import SearchService
-from cctv_memory.config.settings import DetectorGateRuleSection
-from cctv_memory.config.settings import PreVlmGateRuleSection
+from cctv_memory.config.settings import DetectorGateRuleSection, PreVlmGateRuleSection
 from cctv_memory.contracts.auth import AccessPolicy, AccessPolicyRules, Principal
 from cctv_memory.contracts.search import StartObservationSearchRequest
 from cctv_memory.contracts.video import SubmitVideoSourceRequest
@@ -223,7 +222,9 @@ def test_pre_vlm_gate_negative_publishes_gate_only_record(runtime_factory: Any) 
     _submit_one(runtime, key="pre-vlm-default-negative")
     vlm = _CountingVlm()
 
-    AnalysisWorker(runtime, video_processor=StaticVideoProcessor(duration_ms=12_000), vlm=vlm).process_one()
+    AnalysisWorker(
+        runtime, video_processor=StaticVideoProcessor(duration_ms=12_000), vlm=vlm
+    ).process_one()
 
     assert vlm.calls == 0
     with runtime.session() as session:

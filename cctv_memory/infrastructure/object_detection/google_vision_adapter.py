@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from cctv_memory.contracts.object_detection import (
     BoundingBox,
@@ -19,8 +21,8 @@ from cctv_memory.contracts.object_detection import (
     Point2D,
     polygon_to_xywh,
 )
+from cctv_memory.domain.exceptions import ObjectDetectionSchemaValidationError
 from cctv_memory.services.object_detection import ObjectDetectionPort
-
 
 DEFAULT_GOOGLE_VISION_PROXY_URL = "http://nginx:7070/api/google/v1/images:annotate"
 
@@ -52,12 +54,26 @@ class GoogleVisionObjectDetectionAdapter(ObjectDetectionPort):
                 timeout=self._timeout_seconds,
             )
             response.raise_for_status()
+            raw_text = response.text
             data = response.json()
         except httpx.HTTPStatusError as exc:
             return self._failed_batch(request, self.from_vendor_error(exc))
         except (httpx.HTTPError, ValueError) as exc:
             return self._failed_batch(request, self.from_vendor_error(exc))
-        return self.from_vendor_response(request, data)
+        try:
+            return self.from_vendor_response(request, data)
+        except (ObjectDetectionSchemaValidationError, ValidationError) as exc:
+            if isinstance(exc, ObjectDetectionSchemaValidationError):
+                raise
+            raise ObjectDetectionSchemaValidationError(
+                "Google Vision response failed object detection schema validation",
+                stage="schema_validation_failed",
+                raw_response=raw_text,
+                parsed_payload=data,
+                validation_errors=exc.errors(include_url=False),
+                provider="google_vision",
+                model_id=self._model_id,
+            ) from exc
 
     def to_vendor_request(self, request: ObjectDetectionBatchRequest) -> dict[str, Any]:
         vendor_requests: list[dict[str, Any]] = []
@@ -83,17 +99,20 @@ class GoogleVisionObjectDetectionAdapter(ObjectDetectionPort):
     ) -> ObjectDetectionBatchResult:
         responses = response.get("responses")
         if not isinstance(responses, list):
-            return self._failed_batch(
-                request,
-                ObjectDetectionError(
-                    code="object_detection_schema_validation_failed",
-                    message="Google Vision response missing responses array",
-                    retryable=False,
-                ),
+            raise self._schema_error(
+                "Google Vision response missing responses array", response
+            )
+        if len(responses) != len(request.images):
+            raise self._schema_error(
+                "Google Vision response count does not match request image count", response
             )
         results: list[ObjectDetectionImageResult] = []
         for idx, image in enumerate(request.images):
-            item = responses[idx] if idx < len(responses) and isinstance(responses[idx], dict) else {}
+            item = (
+                responses[idx]
+                if idx < len(responses) and isinstance(responses[idx], dict)
+                else {}
+            )
             if "error" in item:
                 error_obj = item.get("error") or {}
                 results.append(
@@ -104,7 +123,9 @@ class GoogleVisionObjectDetectionAdapter(ObjectDetectionPort):
                         detections=[],
                         error=ObjectDetectionError(
                             code="object_detection_provider_error",
-                            message=str(error_obj.get("message", "Google Vision image error"))[:500],
+                            message=str(
+                                error_obj.get("message", "Google Vision image error")
+                            )[:500],
                             retryable=False,
                             provider_status=error_obj.get("status"),
                             provider_code=error_obj.get("code"),
@@ -139,7 +160,11 @@ class GoogleVisionObjectDetectionAdapter(ObjectDetectionPort):
     def from_vendor_error(self, error: Exception) -> ObjectDetectionError:
         if isinstance(error, httpx.HTTPStatusError):
             status = error.response.status_code
-            code = "object_detection_rate_limited" if status == 429 else "object_detection_provider_error"
+            code = (
+                "object_detection_rate_limited"
+                if status == 429
+                else "object_detection_provider_error"
+            )
             return ObjectDetectionError(
                 code=code,  # type: ignore[arg-type]
                 message=f"Google Vision HTTP error {status}",
@@ -204,6 +229,19 @@ class GoogleVisionObjectDetectionAdapter(ObjectDetectionPort):
                 for image in request.images
             ],
             usage=ObjectDetectionUsage(image_count=len(request.images), provider_request_count=1),
+        )
+
+    def _schema_error(
+        self, message: str, response: dict[str, Any]
+    ) -> ObjectDetectionSchemaValidationError:
+        return ObjectDetectionSchemaValidationError(
+            message,
+            stage="schema_validation_failed",
+            raw_response=json.dumps(response),
+            parsed_payload=response,
+            validation_errors=[{"msg": message}],
+            provider="google_vision",
+            model_id=self._model_id,
         )
 
     @staticmethod

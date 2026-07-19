@@ -346,6 +346,29 @@ def _cmd_maintenance(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_diagnostics(args: argparse.Namespace) -> int:
+    from cctv_memory.application.admin_diagnostics import AdminDiagnosticsService
+    from cctv_memory.infrastructure.runtime import build_runtime
+
+    runtime = build_runtime(data_dir=args.data_dir)
+    with runtime.request_services() as svc:
+        principal = svc.auth.resolve_principal(args.principal_id)
+        scope = svc.auth.authorized_scope_for(principal)
+    with runtime.session() as session:
+        repos = runtime.repositories(session)
+        service = AdminDiagnosticsService(
+            repos.analysis_job(),
+            repos.scale_task(),
+            repos.analysis_unit(),
+            repos.model_call_log(),
+            repos.pre_vlm_gate_log(),
+        )
+        result = service.failure_details(args.job_id, scope)
+    runtime.dispose()
+    _print({"failure_diagnostics": result.model_dump()})
+    return 0
+
+
 def _cmd_timeline_export(args: argparse.Namespace) -> int:
     from cctv_memory.infrastructure.runtime import build_runtime
     from cctv_memory.ops.timeline_export import export_aggregate_timeline, export_timeline
@@ -559,6 +582,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_maint_sweep.add_argument("--data-dir", default="./data")
     p_maint_sweep.add_argument("--principal-id", default=DEV_PRINCIPAL_ID)
 
+    p_diag = sub.add_parser("diagnostics", help="Admin diagnostics operations.")
+    p_diag_sub = p_diag.add_subparsers(dest="diagnostics_command")
+    p_diag_failures = p_diag_sub.add_parser(
+        "failures", help="Show model-output failure diagnostics for one job."
+    )
+    p_diag_failures.add_argument("--data-dir", default="./data")
+    p_diag_failures.add_argument("--principal-id", default=DEV_PRINCIPAL_ID)
+    p_diag_failures.add_argument("--job-id", required=True)
+
     p_timeline = sub.add_parser("timeline", help="Timeline observability operations.")
     p_timeline_sub = p_timeline.add_subparsers(dest="timeline_command")
     p_timeline_export = p_timeline_sub.add_parser(
@@ -627,6 +659,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "maintenance":
         if getattr(args, "maintenance_command", None) == "sweep":
             return _cmd_maintenance(args)
+        parser.print_help()
+        return 0
+    if args.command == "diagnostics":
+        if getattr(args, "diagnostics_command", None) == "failures":
+            return _cmd_diagnostics(args)
         parser.print_help()
         return 0
     if args.command == "timeline":

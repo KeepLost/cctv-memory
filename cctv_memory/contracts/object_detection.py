@@ -12,7 +12,6 @@ from pydantic import Field, model_validator
 
 from cctv_memory.contracts.common import ContractModel
 
-
 ObjectDetectionSchemaVersion = Literal["object_detection_v1"]
 ObjectDetectionProvider = str
 ImageInputKind = Literal["bytes_base64", "uri", "artifact_ref"]

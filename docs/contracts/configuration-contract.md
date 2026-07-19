@@ -136,17 +136,21 @@ vlm:
   media_input: frames       # frames（默认，抽帧多图） | video（整段视频，显式开启）
   include_audio: false      # 默认不带音频；仅 media_input=video 且显式 true 时携带
   timeout_seconds: 120
-  max_retries: 2            # 适配器“单次逻辑调用内”的传输级重试（与下面 unit 级重试不同）
+  max_retries: 2            # legacy adapter knob; schema 重生成不得在 adapter 内隐藏循环
   # --- 新增 (任务 cctv-memory-20260611-1410) ---
   extra_body: {}            # provider 自定义请求体参数（非敏感，JSON-serializable）
                             # 禁止覆盖 model/messages/Authorization/stream/tools 等核心字段
   max_concurrent_requests: 1  # 进程级全局 provider 调用上限(所有并发 job/unit/retry 共享, 单一真值源)
   min_request_interval_ms: 0  # 请求启动最小间隔（ms）；0=不限速
   # --- 新增 (任务 cctv-memory-20260615-1447: 单元级瞬时重试 + 终态写入加固) ---
-  unit_max_attempts: 3          # per-unit VLM 调用总尝试次数；1=不重试(旧行为)。仅瞬时 provider 错误重试
+  unit_max_attempts: 3          # per-unit 瞬时 provider 错误尝试次数；每次经 VlmScheduler
   retry_backoff_base_ms: 500    # 指数退避基数；base*2^(n-1)，0=不等待
   retry_backoff_cap_ms: 8000    # 退避上限
   retry_jitter: 0.2             # 退避抖动幅度 [0,1]，实际延迟 = backoff*(1±jitter)
+  schema_repair_enabled: true   # VLM JSON/fence/禁止字段机械修复
+  schema_regenerate_max_attempts: 1  # schema 失败后的严格重生成次数；每次经 VlmScheduler
+  schema_regenerate_instruction: strict_json_retry_instruction
+  schema_retry_backoff_ms: 0
   terminal_write_max_attempts: 3  # 终态 DB 写入(mark_failed/skipped/成功)瞬时锁重试次数；1=不重试
   terminal_write_backoff_ms: 100  # 终态写入重试线性退避基数
   media_log_mode: metadata_only   # metadata_only | debug_full_media
@@ -155,9 +159,9 @@ vlm:
 
 > 说明（任务 cctv-memory-20260615-1447 单元级重试）：`vlm.unit_max_attempts` 等控制 **worker 层
 > per-unit 重试**——当 VLM 调用因**瞬时 provider 错误**（`VlmProviderError`：超时/传输/5xx/429/冷启动）
-> 失败时，per-unit runner 在同一 `running` unit 内重试整个 VLM 调用（指数退避+抖动，**每次尝试仍经
-> 全局 VlmScheduler**），永久错误（schema/抽帧/insufficient_frames/发布/存储）不重试。这与适配器的
-> `vlm.max_retries`（单次逻辑调用内的传输级/重提示重试）是**两个不同层级**。默认 `unit_max_attempts=3`
+> 失败时，per-unit runner 在同一 `running` unit 内重试整个 VLM 调用（指数退避+抖动）；当 schema
+> 校验失败时，先机械修复，再按 `schema_regenerate_max_attempts` 进行严格重生成。**每次尝试仍经
+> 全局 VlmScheduler**。默认 `unit_max_attempts=3`
 > 用于吸收冷启动首调失败；设为 1 即恢复旧的不重试行为。`terminal_write_max_attempts` 让终态 DB 写入
 > 在遇到瞬时 SQLite 锁/busy 时短暂重试，避免终态写入静默失败导致 tally 与 DB 状态分歧；耗尽即抛错
 > （不假装成功），由有界孤儿回收兜底。不引入 `recoverable_running`。重试期间发布保持精确一次。

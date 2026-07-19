@@ -261,6 +261,23 @@ Rules:
 
 ---
 
+## 12.6 Admin Model Failure Diagnostics
+
+Failure diagnostics are internal/admin reads only. They must not be exposed through
+AI-facing search/detail repositories.
+
+```text
+ModelCallLogRepository.list_by_job(analysis_job_id) -> list[ModelCallLog]
+PreVlmGateLogRepository.list_by_job(analysis_job_id) -> list[PreVlmGateLog]
+```
+
+Rules:
+
+- Caller must enforce `runtime.manage` or an equivalent admin/operator capability.
+- Normal observation search/detail/locator paths must not depend on these methods.
+
+---
+
 ## 13. BackupRepository / BackupPort
 
 ```text

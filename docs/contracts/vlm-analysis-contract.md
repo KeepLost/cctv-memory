@@ -309,11 +309,11 @@ ensure attr.alert is boolean
 attach system-derived timing/camera/location/policy metadata
 ```
 
-If validation fails:
+If validation still fails after mechanical repair and configured schema regeneration:
 
 ```text
 mark analysis unit failed with vlm_schema_validation_failed
-store sanitized raw/error snippet for debugging if allowed
+store the full original textual provider response and structured validation details
 never publish invalid output to active ObservationRecord
 ```
 
@@ -352,11 +352,11 @@ schema repeatedly invalid after configured retries
 input segment missing
 ```
 
-> 单元级瞬时重试 + 逐次审计（任务 cctv-memory-20260615-1447）：worker 的 per-unit runner 在同一
-> `running` unit 内对上面 Retryable 一类（统一表现为 `VlmProviderError`）做有界重试——次数
-> `vlm.unit_max_attempts`（默认 3），指数退避 + 抖动，**每次尝试仍经全局 VlmScheduler**（并发/限速
-> 不被绕过）；Non-retryable 一类不重试，立即落终态。这是在**适配器自身 `max_retries`（单次逻辑调用内
-> 的传输级/重提示重试）之上的第二层**重试。
+> 单元级瞬时重试 + schema 重生成 + 逐次审计：worker 的 per-unit runner 在同一 `running` unit 内
+> 对 Retryable 一类（统一表现为 `VlmProviderError`）做有界重试，次数由 `vlm.unit_max_attempts`
+> 控制；对 schema/contract 校验失败，先进行本地机械修复，再按 `vlm.schema_regenerate_max_attempts`
+> 发起严格 schema 重生成。**每次 provider/model attempt 都经全局 VlmScheduler**（并发/限速不被绕过）。
+> schema 重生成不得在 adapter 内部隐藏循环。
 >
 > ModelCallLog 逐次记录：每次失败的尝试各写一条 `status=failed` 的 ModelCallLog，`attempt_count`
 > 为真实尝试序号，`attempt_details` 记录 `error_type` / `transient` / `backoff_ms`；最终成功写一条

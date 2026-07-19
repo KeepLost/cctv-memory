@@ -20,12 +20,16 @@ from typing import TYPE_CHECKING
 from cctv_memory.application.publication import PublicationService
 from cctv_memory.config.settings import DetectorGateRuleSection
 from cctv_memory.contracts.analysis import AnalysisUnit, DetectorGateLog, ModelCallLog
-from cctv_memory.contracts.pre_vlm_gate import GateProfile
 from cctv_memory.contracts.pipeline import PublishObservationRecordsCommand
+from cctv_memory.contracts.pre_vlm_gate import GateProfile
 from cctv_memory.contracts.vlm import VlmObservationOutput, VlmSegmentRequest
 from cctv_memory.domain import policies
 from cctv_memory.domain.enums import AnalysisScale, ModelCallStatus, TaskStatus
-from cctv_memory.domain.exceptions import InsufficientFramesError, NotFoundError
+from cctv_memory.domain.exceptions import (
+    InsufficientFramesError,
+    NotFoundError,
+    ObjectDetectionSchemaValidationError,
+)
 from cctv_memory.repositories.analysis import (
     AnalysisJobRepository,
     AnalysisUnitRepository,
@@ -752,21 +756,39 @@ class DefaultSegmentProcessor:
             return UnitOutcome.FAILED
 
         detector_summary: dict[str, object] | None = None
-        gate_bundle = run_pre_vlm_gate(
-            gate=self._pre_vlm_gate,
-            profile=self._pre_vlm_gate_profile,
-            media_refs_input=selection.media_refs_input,
-            analysis_job_id=analysis_job_id,
-            scale_task_id=self._scale_task_id,
-            unit_id=unit_id,
-            video_id=video_id,
-            analysis_scale=AnalysisScale.DEFAULT_SEGMENT,
-            unit_kind="default_segment_window",
-            segment_start_ms=start_ms,
-            segment_end_ms=end_ms,
-            provider=(self._pre_vlm_gate_profile.provider if self._pre_vlm_gate_profile else ""),
-            model_id=self._pre_vlm_gate_profile.model_id if self._pre_vlm_gate_profile else None,
-        )
+        try:
+            gate_bundle = run_pre_vlm_gate(
+                gate=self._pre_vlm_gate,
+                profile=self._pre_vlm_gate_profile,
+                media_refs_input=selection.media_refs_input,
+                analysis_job_id=analysis_job_id,
+                scale_task_id=self._scale_task_id,
+                unit_id=unit_id,
+                video_id=video_id,
+                analysis_scale=AnalysisScale.DEFAULT_SEGMENT,
+                unit_kind="default_segment_window",
+                segment_start_ms=start_ms,
+                segment_end_ms=end_ms,
+                provider=(
+                    self._pre_vlm_gate_profile.provider
+                    if self._pre_vlm_gate_profile
+                    else ""
+                ),
+                model_id=self._pre_vlm_gate_profile.model_id
+                if self._pre_vlm_gate_profile
+                else None,
+            )
+        except ObjectDetectionSchemaValidationError as exc:
+            self._db_write(
+                lambda error=exc: self._mark_unit_failed(
+                    unit_id=unit_id,
+                    error_code="object_detection_schema_validation_failed",
+                    exc=error,
+                    attempts=0,
+                    mcall_id=mcall_id,
+                )
+            )
+            return UnitOutcome.FAILED
         if gate_bundle is not None:
             detector_summary = gate_bundle.summary
             if not gate_bundle.triggered_vlm:
@@ -952,6 +974,14 @@ class DefaultSegmentProcessor:
                             attempt_count=rec.attempt,
                             error_type=rec.error_type,
                             error_message=rec.error_message,
+                            raw_text_output=rec.raw_text_output,
+                            parsed_output=rec.parsed_output,
+                            validation_status=rec.validation_status,
+                            response_hash=(
+                                _sha256_short(rec.raw_text_output)
+                                if rec.raw_text_output is not None
+                                else None
+                            ),
                             media_refs=media_refs,
                             payload_hash=input_manifest_hash,
                             attempt_details=attach_manifest_to_attempts(

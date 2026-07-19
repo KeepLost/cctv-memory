@@ -72,6 +72,7 @@ resource_exists_but_forbidden
 | worker | vlm_provider_error | true | provider 临时错误（超时/传输/5xx/429/冷启动）；unit 层做有界退避重试 |
 | worker | vlm_rate_limited | true | provider 限流 |
 | worker | vlm_schema_validation_failed | false | VLM 输出不符合 schema |
+| worker | object_detection_schema_validation_failed | false | pre-VLM 目标检测输出不符合 schema |
 | worker | prompt_version_missing | false | prompt version 未注册 |
 | worker | analysis_unit_failed | true/false | 单分析单元失败 |
 
@@ -131,8 +132,9 @@ internal_error_hides_stack_trace
 ```
 
 > 单元级瞬时重试（任务 cctv-memory-20260615-1447）：`vlm_provider_error`（retryable=true）在
-> per-unit runner 内做有界退避+抖动重试，每次尝试经全局 VlmScheduler；永久错误
-> （`vlm_schema_validation_failed` / `frame_extraction_failed` / `insufficient_frames`）不重试。
+> per-unit runner 内做有界退避+抖动重试，每次尝试经全局 VlmScheduler；schema 校验失败先机械修复，
+> 再按配置发起经 VlmScheduler 的严格 schema 重生成；`frame_extraction_failed` / `insufficient_frames`
+> 不做模型重试。
 > 重试预算耗尽后 unit 落 `failed(vlm_provider_error)`。终态 DB 写入遇到瞬时锁按
 > `retryable_storage_error` 语义做有界重试，耗尽即抛错（由孤儿回收兜底，不引入 `recoverable_running`）。
 > 相关测试：`tests/integration/test_unit_retry_state_hardening.py`。
